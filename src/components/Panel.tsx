@@ -236,12 +236,74 @@ export default function Panel() {
       let currentSpeaker = "";
       let currentMessageText = "";
 
-      for await (const chunk of generatePanelDiscussion(userMsg, agents, { systemInstruction: systemPrompt }, abortControllerRef.current.signal, ollamaUrl, ollamaModel)) {
+      let sentenceBuffer = "";
+      const sentenceEndRegex = /[.!?](\s|$)/;
+
+      for await (const chunk of generatePanelDiscussion(userMsg, agents, { systemInstruction: systemPrompt, discussionId: `disc-${Date.now()}` }, abortControllerRef.current.signal, ollamaUrl, ollamaModel)) {
         setIsInitializing(false);
         if (abortControllerRef.current.signal.aborted) {
           break;
         }
+
+        // Handle Real-time Memory Updates
+        if (chunk.startsWith('MEMORY_UPDATE:')) {
+          try {
+            const memoryData = JSON.parse(chunk.replace('MEMORY_UPDATE:', ''));
+            const formattedMemory = `
+### FACTS
+${memoryData.facts.map((f: string) => `- ${f}`).join('\n')}
+
+### ASSUMPTIONS
+${memoryData.assumptions.map((a: string) => `- ${a}`).join('\n')}
+
+### CONFLICTS
+${memoryData.conflicts.map((c: string) => `- ${c}`).join('\n')}
+
+### DECISIONS
+${memoryData.decisions.map((d: string) => `- ${d}`).join('\n')}
+
+### OPEN QUESTIONS
+${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
+            `;
+            setMemoryBoardContent(formattedMemory);
+            continue;
+          } catch (e) {
+            console.error("Failed to parse memory update:", e);
+          }
+        }
+
         buffer += chunk;
+        
+        // Immediate Speaker Detection (handle partial lines)
+        if (!isFinalPlanMode) {
+          const agentNames = agents.map(a => a.name).join('|');
+          const speakerRegex = new RegExp(`^(?:\\*\\*|)?\\[(${agentNames})\\](?:\\*\\*|)?(?:\\s*\\[.*?\\])*:\\s*(.*)`, 'i');
+          
+          // Check if the buffer itself starts a new speaker
+          const bufferMatch = buffer.match(speakerRegex);
+          if (bufferMatch && !currentSpeaker) {
+            currentSpeaker = bufferMatch[1].trim();
+            setActiveAgentName(currentSpeaker);
+          }
+        }
+
+        // Parallel TTS: Extract sentences from the current speaker's text
+        if (!isFinalPlanMode && currentSpeaker) {
+          sentenceBuffer += chunk;
+          const parts = sentenceBuffer.split(sentenceEndRegex);
+          if (parts.length > 1) {
+            // The last part is the remaining incomplete sentence
+            sentenceBuffer = parts.pop() || "";
+            // The rest are complete sentences
+            for (const sentence of parts) {
+              if (sentence.trim().length > 5) {
+                const agent = agents.find(a => a.name === currentSpeaker);
+                if (agent) enqueueAudio(sentence.trim(), agent.voice, agent.name);
+              }
+            }
+          }
+        }
+
         let lines = buffer.split('\n');
         buffer = lines.pop() || "";
 
@@ -276,12 +338,22 @@ export default function Panel() {
           const match = line.match(speakerRegex);
           if (match) {
             if (currentSpeaker && currentMessageText) {
-              commitMessage(currentSpeaker, currentMessageText);
+              // Enqueue leftover sentence buffer before switching speakers
+              if (sentenceBuffer.trim().length > 0) {
+                const agent = agents.find(a => a.name === currentSpeaker);
+                if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.name);
+                sentenceBuffer = "";
+              }
+              commitMessage(currentSpeaker, currentMessageText, true);
             }
             currentSpeaker = match[1].trim();
             currentMessageText = match[2] + '\n';
+            sentenceBuffer = match[2]; // Initialize sentence buffer with the first part of the message
             setActiveAgentName(currentSpeaker);
             setCurrentStreamingText(currentMessageText);
+            
+            // Clear initializing state as soon as we have a speaker
+            setIsInitializing(false);
           } else if (currentSpeaker) {
               currentMessageText += line + '\n';
               setCurrentStreamingText(currentMessageText);
@@ -303,10 +375,22 @@ export default function Panel() {
           }
         } else if (currentSpeaker) {
           currentMessageText += buffer;
-          commitMessage(currentSpeaker, currentMessageText);
+          // Enqueue leftover sentence buffer
+          if (sentenceBuffer.trim().length > 0) {
+            const agent = agents.find(a => a.name === currentSpeaker);
+            if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.name);
+            sentenceBuffer = "";
+          }
+          commitMessage(currentSpeaker, currentMessageText, true);
         }
       } else if (currentSpeaker && currentMessageText) {
-         commitMessage(currentSpeaker, currentMessageText);
+         // Enqueue leftover sentence buffer
+         if (sentenceBuffer.trim().length > 0) {
+           const agent = agents.find(a => a.name === currentSpeaker);
+           if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.name);
+           sentenceBuffer = "";
+         }
+         commitMessage(currentSpeaker, currentMessageText, true);
       }
 
     } catch (error) {
@@ -325,8 +409,8 @@ export default function Panel() {
     }
   };
 
-  const commitMessage = (speaker: string, text: string) => {
-    const agent = agents.find(a => a.name === speaker);
+  const commitMessage = (speaker: string, text: string, skipAudio: boolean = false) => {
+    const agent = agents.find(a => a.role === speaker || a.name === speaker);
     setMessages(prev => [...prev, {
       id: Date.now().toString() + Math.random(),
       sender: speaker,
@@ -335,7 +419,7 @@ export default function Panel() {
       colorHex: agent?.hex || '#ffffff'
     }]);
     
-    if (agent) {
+    if (agent && !skipAudio) {
       enqueueAudio(text.trim(), agent.voice, agent.name);
     }
   };
@@ -583,7 +667,14 @@ export default function Panel() {
           <div className="modal-content" style={{ transform: 'scale(1)', flexDirection: 'column' }}>
             <div className="settings-header" style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', margin: 0 }}>
               <div>
-                <h2>Shared Memory Board</h2>
+                <div className="flex items-center gap-3">
+                  <h2>Shared Memory Board</h2>
+                  {isProcessing && (
+                    <span className="text-[10px] uppercase tracking-widest text-blue-400 flex items-center gap-1 bg-blue-400/10 px-2 py-0.5 rounded border border-blue-400/20">
+                      <Loader2 size={10} className="animate-spin" /> Syncing...
+                    </span>
+                  )}
+                </div>
                 <p>Facts, assumptions, conflicts, decisions, and open questions.</p>
               </div>
               <div className="flex items-center gap-2">
@@ -600,7 +691,7 @@ export default function Panel() {
                 <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '40px' }}>
                   <AudioLines size={48} style={{ margin: '0 auto 15px auto', opacity: 0.2 }} />
                   <p>The memory board is empty.</p>
-                  <p style={{ fontSize: '0.85rem', marginTop: '10px' }}>It will be populated at the end of the panel discussion.</p>
+                  <p style={{ fontSize: '0.85rem', marginTop: '10px' }}>It will be populated in real-time as the discussion progresses.</p>
                 </div>
               )}
             </div>

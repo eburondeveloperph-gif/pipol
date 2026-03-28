@@ -19,37 +19,127 @@ export async function* generatePanelDiscussion(
     requiredFeatures?: string[];
     userPreferences?: string;
     systemInstruction?: string;
+    discussionId?: string;
   } = {},
   signal?: AbortSignal,
   ollamaUrl: string = 'http://localhost:11434',
   ollamaModel: string = 'gemma'
 ) {
-  // 1. Initialize Shared Memory
-  const memoryBoard: MemoryBoard = {
-    facts: [`Project Topic: ${topic}`],
-    assumptions: [],
-    conflicts: [],
-    decisions: [],
-    openQuestions: []
-  };
-
-  const conversationHistory: { role: string, content: string }[] = [];
-
+  const discussionId = options.discussionId || `disc-${Date.now()}`;
+  
   const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
   const specialists = agents.filter(a => a.role !== 'Manager' && a.id !== 0);
 
-  // 2. Manager Opens the Meeting
-  yield* runAgentTurn(manager, `Open the meeting for the topic: "${topic}". Frame the project and set the initial direction.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
+  // 1. Yield Manager's name immediately for instant feedback
+  yield `[${manager.name}]: `;
 
-  // 3. Discussion Loop (Simplified for now: each specialist speaks once)
-  // In a more complex version, the Manager would decide who speaks next.
+  // 2. Initialize/Load Shared Memory from "DB"
+  let memoryBoard: MemoryBoard;
+  try {
+    const res = await fetch(`/api/memory/${discussionId}`);
+    memoryBoard = await res.json();
+    if (!memoryBoard.facts.length) {
+      memoryBoard.facts = [`Project Topic: ${topic}`];
+    }
+  } catch (e) {
+    memoryBoard = {
+      facts: [`Project Topic: ${topic}`],
+      assumptions: [],
+      conflicts: [],
+      decisions: [],
+      openQuestions: []
+    };
+  }
+
+  const conversationHistory: { role: string, content: string }[] = [];
+
+  // 3. Manager Opens the Meeting
+  yield* runAgentTurn(manager, `Open the meeting for the topic: "${topic}". Frame the project and set the initial direction.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, false, true);
+
+  // Update memory board from manager's opening
+  const managerOpening = conversationHistory[conversationHistory.length - 1].content;
+  const managerUpdates = await extractMemoryUpdates(manager.name, manager.role, managerOpening, memoryBoard);
+  updateMemoryBoard(memoryBoard, managerUpdates);
+  yield `MEMORY_UPDATE:${JSON.stringify(memoryBoard)}`;
+  await saveMemory(discussionId, memoryBoard);
+
+  // 3. Discussion Loop (Sequential turns)
   for (const agent of specialists) {
     if (signal?.aborted) break;
     yield* runAgentTurn(agent, `Contribute to the discussion about "${topic}" from your perspective as ${agent.role}. React to what others have said.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
+    
+    // Update memory board from specialist's turn
+    const agentResponse = conversationHistory[conversationHistory.length - 1].content;
+    const agentUpdates = await extractMemoryUpdates(agent.name, agent.role, agentResponse, memoryBoard);
+    updateMemoryBoard(memoryBoard, agentUpdates);
+    yield `MEMORY_UPDATE:${JSON.stringify(memoryBoard)}`;
+    await saveMemory(discussionId, memoryBoard);
   }
 
   // 4. Manager Verdict and Final Plan
   yield* runAgentTurn(manager, `Summarize the discussion, make final decisions, and present the FINAL_PLAN including the Shared Memory Board.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, true);
+  
+  // Final memory update
+  const finalVerdict = conversationHistory[conversationHistory.length - 1].content;
+  const finalUpdates = await extractMemoryUpdates(manager.name, manager.role, finalVerdict, memoryBoard);
+  updateMemoryBoard(memoryBoard, finalUpdates);
+  yield `MEMORY_UPDATE:${JSON.stringify(memoryBoard)}`;
+  await saveMemory(discussionId, memoryBoard);
+}
+
+async function extractMemoryUpdates(
+  agentName: string,
+  agentRole: string,
+  content: string,
+  currentMemory: MemoryBoard
+): Promise<Partial<MemoryBoard>> {
+  const prompt = `
+You are a memory extraction system. Analyze the following contribution from ${agentName} (${agentRole}) in a panel discussion.
+Extract any NEW Facts, Assumptions, Conflicts, Decisions, or Open Questions.
+
+CURRENT MEMORY:
+${JSON.stringify(currentMemory, null, 2)}
+
+CONTRIBUTION:
+"${content}"
+
+Return ONLY a JSON object with the updates. Do not repeat existing memory.
+Example: { "facts": ["New fact"], "decisions": ["New decision"] }
+`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json"
+      }
+    });
+    return JSON.parse(response.text || "{}");
+  } catch (e) {
+    console.error("Memory extraction failed:", e);
+    return {};
+  }
+}
+
+function updateMemoryBoard(board: MemoryBoard, updates: Partial<MemoryBoard>) {
+  if (updates.facts) board.facts = [...new Set([...board.facts, ...updates.facts])];
+  if (updates.assumptions) board.assumptions = [...new Set([...board.assumptions, ...updates.assumptions])];
+  if (updates.conflicts) board.conflicts = [...new Set([...board.conflicts, ...updates.conflicts])];
+  if (updates.decisions) board.decisions = [...new Set([...board.decisions, ...updates.decisions])];
+  if (updates.openQuestions) board.openQuestions = [...new Set([...board.openQuestions, ...updates.openQuestions])];
+}
+
+async function saveMemory(id: string, memory: MemoryBoard) {
+  try {
+    await fetch(`/api/memory/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(memory)
+    });
+  } catch (e) {
+    console.error("Failed to save memory to DB:", e);
+  }
 }
 
 async function* runAgentTurn(
@@ -62,7 +152,8 @@ async function* runAgentTurn(
   signal?: AbortSignal,
   ollamaUrl?: string,
   ollamaModel?: string,
-  isFinalVerdict: boolean = false
+  isFinalVerdict: boolean = false,
+  skipTag: boolean = false
 ) {
   const memoryContext = `
 SHARED MEMORY BOARD:
@@ -109,7 +200,7 @@ ${history.map(h => `[${h.role}]: ${h.content}`).join('\n')}
     const decoder = new TextDecoder();
     let buffer = '';
     
-    yield `[${agent.name}]: `;
+    if (!skipTag) yield `[${agent.name}]: `;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -139,7 +230,7 @@ ${history.map(h => `[${h.role}]: ${h.content}`).join('\n')}
       }
     });
 
-    yield `[${agent.name}]: `;
+    if (!skipTag) yield `[${agent.name}]: `;
     for await (const chunk of responseStream) {
       if (chunk.text) {
         fullResponse += chunk.text;
