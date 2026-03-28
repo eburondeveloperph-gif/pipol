@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { generatePanelDiscussion, generateTTS } from '../lib/gemini';
 import { MASTER_PANEL_PROMPT } from '../lib/prompts';
-import { Hexagon, SlidersHorizontal, Mic, Send, AudioLines, X, UserPlus, Trash2, Image as ImageIcon, Cpu, User, Star, Volume2, Moon, Sun, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Hexagon, SlidersHorizontal, Mic, Send, AudioLines, X, UserPlus, Trash2, Image as ImageIcon, Cpu, User, Star, Volume2, VolumeX, Moon, Sun, PanelLeftClose, PanelLeftOpen, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const dummyImages = [
@@ -24,7 +24,7 @@ const defaultAgents = [
   { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)" },
   { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)" },
   { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Aoede", provider: "Cloud (Gemini)" }
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)" }
 ];
 
 interface Message {
@@ -48,10 +48,12 @@ export default function Panel() {
   ]);
 
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isMuted, setIsMuted] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [systemPrompt, setSystemPrompt] = useState(MASTER_PANEL_PROMPT);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [activeAgentName, setActiveAgentName] = useState<string | null>(null);
   const [currentStreamingText, setCurrentStreamingText] = useState('');
   const [showSettings, setShowSettings] = useState(false);
@@ -59,6 +61,7 @@ export default function Panel() {
   const [memoryBoardContent, setMemoryBoardContent] = useState('');
   const [activeEditIndex, setActiveEditIndex] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
+  const [isHandsFree, setIsHandsFree] = useState(false);
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModel, setOllamaModel] = useState('gemma');
   const [playingAgentName, setPlayingAgentName] = useState<string | null>(null);
@@ -66,10 +69,21 @@ export default function Panel() {
   const chatWindowRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
+  const inputRef = useRef('');
   const initialInputRef = useRef('');
   const audioQueueRef = useRef<{ text: string, voice: string, agentName: string }[]>([]);
   const isPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.muted = isMuted;
+    }
+  }, [isMuted]);
+
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
 
   const processAudioQueue = async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
@@ -87,18 +101,27 @@ export default function Panel() {
       const url = await generateTTS(item.text, item.voice);
       if (url) {
         const audio = new Audio(url);
+        audio.muted = isMuted;
         currentAudioRef.current = audio;
         audio.onended = () => {
           setPlayingAgentName(null);
           isPlayingRef.current = false;
           currentAudioRef.current = null;
-          processAudioQueue();
+          if (audioQueueRef.current.length === 0 && isHandsFree) {
+            setTimeout(() => toggleMic(), 500);
+          } else {
+            processAudioQueue();
+          }
         };
         audio.onerror = () => {
           setPlayingAgentName(null);
           isPlayingRef.current = false;
           currentAudioRef.current = null;
-          processAudioQueue();
+          if (audioQueueRef.current.length === 0 && isHandsFree) {
+            setTimeout(() => toggleMic(), 500);
+          } else {
+            processAudioQueue();
+          }
         };
         await audio.play();
       } else {
@@ -145,6 +168,9 @@ export default function Panel() {
 
       recognitionRef.current.onend = () => {
         setIsRecording(false);
+        if (isHandsFree && inputRef.current.trim()) {
+          handleSend(inputRef.current);
+        }
       };
 
       recognitionRef.current.onerror = (event: any) => {
@@ -168,6 +194,7 @@ export default function Panel() {
       recognitionRef.current.stop();
     } else {
       initialInputRef.current = input;
+      recognitionRef.current.continuous = !isHandsFree;
       recognitionRef.current.start();
       setIsRecording(true);
     }
@@ -177,7 +204,7 @@ export default function Panel() {
     const userMsg = (overrideInput || input).trim();
     if (!userMsg || isProcessing) return;
 
-    if (!overrideInput) setInput('');
+    setInput('');
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       sender: 'Commander',
@@ -186,6 +213,7 @@ export default function Panel() {
     }]);
 
     setIsProcessing(true);
+    setIsInitializing(true);
     setActiveAgentName(null);
     setCurrentStreamingText('');
     setMemoryBoardContent('');
@@ -208,6 +236,7 @@ export default function Panel() {
       let currentMessageText = "";
 
       for await (const chunk of generatePanelDiscussion(userMsg, agents, { systemInstruction: systemPrompt }, abortControllerRef.current.signal, ollamaUrl, ollamaModel)) {
+        setIsInitializing(false);
         if (abortControllerRef.current.signal.aborted) {
           break;
         }
@@ -220,10 +249,11 @@ export default function Panel() {
             isFinalPlanMode = true;
             if (currentSpeaker && currentMessageText) {
               commitMessage(currentSpeaker, currentMessageText);
-              currentSpeaker = "";
-              currentMessageText = "";
-              setCurrentStreamingText('');
             }
+            currentSpeaker = "";
+            currentMessageText = "";
+            setCurrentStreamingText('');
+            setActiveAgentName(null);
             continue;
           }
 
@@ -240,16 +270,18 @@ export default function Panel() {
               updateFinalPlanMessage(currentFinalPlan);
             }
           } else {
-            const match = line.match(/^(?:\*\*|)?\[(.*?)\](?:\*\*|)?:\s*(.*)/);
-            if (match) {
-              if (currentSpeaker && currentMessageText) {
-                commitMessage(currentSpeaker, currentMessageText);
-              }
-              currentSpeaker = match[1].replace(/\*\*/g, '').trim();
-              currentMessageText = match[2] + '\n';
-              setActiveAgentName(currentSpeaker);
-              setCurrentStreamingText(currentMessageText);
-            } else if (currentSpeaker) {
+          const agentNames = agents.map(a => a.name).join('|');
+          const speakerRegex = new RegExp(`^(?:\\*\\*|)?\\[(${agentNames})\\](?:\\*\\*|)?(?:\\s*\\[.*?\\])*:\\s*(.*)`, 'i');
+          const match = line.match(speakerRegex);
+          if (match) {
+            if (currentSpeaker && currentMessageText) {
+              commitMessage(currentSpeaker, currentMessageText);
+            }
+            currentSpeaker = match[1].trim();
+            currentMessageText = match[2] + '\n';
+            setActiveAgentName(currentSpeaker);
+            setCurrentStreamingText(currentMessageText);
+          } else if (currentSpeaker) {
               currentMessageText += line + '\n';
               setCurrentStreamingText(currentMessageText);
             }
@@ -286,6 +318,7 @@ export default function Panel() {
       }]);
     } finally {
       setIsProcessing(false);
+      setIsInitializing(false);
       setActiveAgentName(null);
       setCurrentStreamingText('');
     }
@@ -337,6 +370,7 @@ export default function Panel() {
     isPlayingRef.current = false;
 
     setIsProcessing(false);
+    setIsInitializing(false);
     setActiveAgentName(null);
     setCurrentStreamingText('');
     setMessages(prev => [...prev, {
@@ -379,6 +413,9 @@ export default function Panel() {
           <div className="logo"><Hexagon /><span>STRATEGY NEXUS</span></div>
         </div>
         <div className="header-actions">
+          <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
+            {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+          </button>
           <button className="btn-icon" onClick={() => setIsDarkMode(!isDarkMode)} title="Toggle Theme">
             {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -449,10 +486,22 @@ export default function Panel() {
               </div>
             ))}
 
+            {isInitializing && (
+              <div className="message system-msg flex items-center gap-2 text-gray-400 opacity-70">
+                <Loader2 size={16} className="animate-spin" />
+                <span>Initializing panel discussion...</span>
+              </div>
+            )}
+
             {activeAgentName && currentStreamingText && (
               <div className="message agent-message">
                 <div className="agent-msg-name" style={{ color: activeAgent?.hex || '#ffffff' }}>
-                  <Cpu size={14} /> {activeAgentName}
+                  <div className="flex items-center gap-2">
+                    <Cpu size={14} /> {activeAgentName}
+                    <span className="text-[10px] uppercase tracking-widest opacity-50 ml-2 flex items-center gap-1">
+                      <Loader2 size={10} className="animate-spin" /> deliberating...
+                    </span>
+                  </div>
                 </div>
                 <div dangerouslySetInnerHTML={{ __html: formatMessageText(currentStreamingText) }} />
               </div>
@@ -460,9 +509,18 @@ export default function Panel() {
           </div>
 
           <div id="controls-wrapper">
-            <button className={`mic-btn ${isRecording ? 'recording' : ''}`} onClick={toggleMic} title="Voice to Text">
-              <Mic size={20} />
-            </button>
+            <div className="flex flex-col items-center gap-1">
+              <button className={`mic-btn ${isRecording ? 'recording' : ''} ${isHandsFree ? 'hands-free' : ''}`} onClick={toggleMic} title="Voice to Text">
+                <Mic size={20} />
+              </button>
+              <button 
+                className={`text-[10px] uppercase font-bold tracking-wider ${isHandsFree ? 'text-blue-400' : 'text-gray-500'}`}
+                onClick={() => setIsHandsFree(!isHandsFree)}
+                title="Hands-Free Mode (Auto-listen & Auto-send)"
+              >
+                {isHandsFree ? 'Hands-Free ON' : 'Hands-Free OFF'}
+              </button>
+            </div>
             
             <div className="input-group">
               <input 
@@ -527,7 +585,12 @@ export default function Panel() {
                 <h2>Shared Memory Board</h2>
                 <p>Facts, assumptions, conflicts, decisions, and open questions.</p>
               </div>
-              <button onClick={() => setShowMemoryBoard(false)} className="btn-icon"><X /></button>
+              <div className="flex items-center gap-2">
+                <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
+                  {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                </button>
+                <button onClick={() => setShowMemoryBoard(false)} className="btn-icon"><X /></button>
+              </div>
             </div>
             <div className="settings-body markdown-body">
               {memoryBoardContent ? (
@@ -582,7 +645,12 @@ export default function Panel() {
                      'Fine-tune persona, visuals, and directives.'}
                   </p>
                 </div>
-                <button onClick={() => setShowSettings(false)} className="btn-icon"><X /></button>
+                <div className="flex items-center gap-2">
+                  <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
+                    {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                  </button>
+                  <button onClick={() => setShowSettings(false)} className="btn-icon"><X /></button>
+                </div>
               </div>
 
               {activeEditIndex === -1 ? (
@@ -666,7 +734,6 @@ export default function Panel() {
                       <option value="Kore">Kore</option>
                       <option value="Fenrir">Fenrir</option>
                       <option value="Zephyr">Zephyr</option>
-                      <option value="Aoede">Aoede</option>
                     </select>
                   </div>
 

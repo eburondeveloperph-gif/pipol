@@ -21,7 +21,7 @@ PROJECT_REQUEST:
 ${topic}
 
 USER_PREFERENCES:
-${options.userPreferences || 'The first phase must feel like a real internal panel discussion with 5 agents and a manager. It must feel human, realistic, and technically grounded. CRITICAL: You MUST use natural human-like conversational elements. Include occasional reaction tags (e.g., [pauses], [sighs], [a little annoyed]), simulate partial overlaps (e.g., [cuts in]), and ensure agents do NOT agree instantly. Make the panel feel highly dynamic and realistic.'}
+${options.userPreferences || 'The first phase must feel like a real internal panel discussion with 5 agents and a manager. It must feel human, realistic, and technically grounded. CRITICAL: You MUST use natural human-like conversational elements. Include occasional reaction tags (e.g., [pauses], [sighs], [a little annoyed]), simulate partial overlaps (e.g., [cuts in]), and ensure agents do NOT agree instantly. Use conversational fillers like "um", "uh", "look", "actually". Make the panel feel highly dynamic, slightly messy like a real meeting, and realistic.'}
 
 PLATFORM_TARGET:
 ${options.platformTarget || 'Web app'}
@@ -94,7 +94,7 @@ Simulate a realistic 5-10 minutes internal panel meeting, then present the final
     }
   } else {
     const responseStream = await ai.models.generateContentStream({
-      model: "gemini-3.1-flash-lite-preview",
+      model: "gemini-3.1-pro-preview",
       contents: runtimeInstruction,
       config: {
         thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
@@ -116,6 +116,7 @@ export async function generateTTS(text: string, voiceName: string = 'Kore') {
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text }] }],
       config: {
+        systemInstruction: "You are a highly expressive voice actor. Speak naturally, with human-like prosody, emotion, and pacing. If the text includes reaction tags like [pauses], [sighs], [laughs], or [clears throat], perform those actions naturally instead of reading the words literally. Maintain the specific persona of the character you are voicing.",
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
