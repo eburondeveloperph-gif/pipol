@@ -61,17 +61,71 @@ export default function Panel() {
   const [isRecording, setIsRecording] = useState(false);
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModel, setOllamaModel] = useState('gemma');
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const [playingAgentName, setPlayingAgentName] = useState<string | null>(null);
+  
+  const chatWindowRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
   const initialInputRef = useRef('');
+  const audioQueueRef = useRef<{ text: string, voice: string, agentName: string }[]>([]);
+  const isPlayingRef = useRef(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const processAudioQueue = async () => {
+    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    
+    isPlayingRef.current = true;
+    const item = audioQueueRef.current.shift();
+    if (!item) {
+      isPlayingRef.current = false;
+      return;
+    }
+
+    setPlayingAgentName(item.agentName);
+    
+    try {
+      const url = await generateTTS(item.text, item.voice);
+      if (url) {
+        const audio = new Audio(url);
+        currentAudioRef.current = audio;
+        audio.onended = () => {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          currentAudioRef.current = null;
+          processAudioQueue();
+        };
+        audio.onerror = () => {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          currentAudioRef.current = null;
+          processAudioQueue();
+        };
+        await audio.play();
+      } else {
+        setPlayingAgentName(null);
+        isPlayingRef.current = false;
+        processAudioQueue();
+      }
+    } catch (e) {
+      setPlayingAgentName(null);
+      isPlayingRef.current = false;
+      processAudioQueue();
+    }
+  };
+
+  const enqueueAudio = (text: string, voice: string, agentName: string) => {
+    audioQueueRef.current.push({ text, voice, agentName });
+    processAudioQueue();
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatWindowRef.current) {
+      chatWindowRef.current.scrollTop = chatWindowRef.current.scrollHeight;
+    }
   }, [messages, currentStreamingText]);
 
   useEffect(() => {
@@ -135,6 +189,14 @@ export default function Panel() {
     setActiveAgentName(null);
     setCurrentStreamingText('');
     setMemoryBoardContent('');
+
+    audioQueueRef.current = [];
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    setPlayingAgentName(null);
+    isPlayingRef.current = false;
 
     abortControllerRef.current = new AbortController();
 
@@ -238,6 +300,10 @@ export default function Panel() {
       type: 'agent-message',
       colorHex: agent?.hex || '#ffffff'
     }]);
+    
+    if (agent) {
+      enqueueAudio(text.trim(), agent.voice, agent.name);
+    }
   };
 
   const updateFinalPlanMessage = (text: string) => {
@@ -261,6 +327,15 @@ export default function Panel() {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+    
+    audioQueueRef.current = [];
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    setPlayingAgentName(null);
+    isPlayingRef.current = false;
+
     setIsProcessing(false);
     setActiveAgentName(null);
     setCurrentStreamingText('');
@@ -322,7 +397,7 @@ export default function Panel() {
 
       <main id="main-layout">
         <div id="left-sidebar" className={!isSidebarOpen ? 'collapsed' : ''}>
-          <div id="chat-window">
+          <div id="chat-window" ref={chatWindowRef}>
             {messages.map((msg) => (
               <div key={msg.id} className={msg.type === 'system-msg' ? 'system-msg' : `message ${msg.type}`}>
                 {msg.type === 'agent-message' && (
@@ -382,8 +457,6 @@ export default function Panel() {
                 <div dangerouslySetInnerHTML={{ __html: formatMessageText(currentStreamingText) }} />
               </div>
             )}
-
-            <div ref={chatEndRef} />
           </div>
 
           <div id="controls-wrapper">
@@ -415,7 +488,10 @@ export default function Panel() {
 
         <div id="agent-grid">
           {agents.map((a, i) => {
-            const isActive = activeAgentName === a.name;
+            const isSpeaking = playingAgentName === a.name;
+            const isTyping = activeAgentName === a.name;
+            const isActive = isSpeaking || isTyping;
+            
             return (
               <div key={a.id} className={`agent-card ${isActive ? 'active' : ''}`} style={{ '--agent-color-rgb': a.rgba } as any}>
                 <div className="card-top">
@@ -427,11 +503,11 @@ export default function Panel() {
                 <div className="card-bottom">
                   <div className="agent-name">
                     {a.name}
-                    <div className="visualizer">
+                    <div className="visualizer" style={{ opacity: isSpeaking ? 1 : 0 }}>
                       <div className="bar"></div><div className="bar"></div><div className="bar"></div>
                     </div>
                   </div>
-                  <div className="agent-status">{isActive ? 'Speaking...' : a.role}</div>
+                  <div className="agent-status">{isSpeaking ? 'Speaking...' : isTyping ? 'Thinking...' : a.role}</div>
                   <div className="power-row">
                     <span className="pwr-left">PWR</span>
                     <span className="pwr-right">{a.score}</span>
