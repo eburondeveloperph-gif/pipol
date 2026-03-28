@@ -19,12 +19,12 @@ const hexToRgb = (hex: string) => {
 };
 
 const defaultAgents = [
-  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)" },
-  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)" },
-  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)" },
-  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)" },
-  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)" }
+  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" }
 ];
 
 interface Message {
@@ -214,7 +214,8 @@ export default function Panel() {
 
     setIsProcessing(true);
     setIsInitializing(true);
-    setActiveAgentName(null);
+    const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
+    setActiveAgentName(manager?.name || null);
     setCurrentStreamingText('');
     setMemoryBoardContent('');
 
@@ -565,7 +566,7 @@ export default function Panel() {
                       <div className="bar"></div><div className="bar"></div><div className="bar"></div>
                     </div>
                   </div>
-                  <div className="agent-status">{isSpeaking ? 'Speaking...' : isTyping ? 'Thinking...' : a.role}</div>
+                  <div className="agent-status">{isSpeaking ? 'Speaking...' : isTyping ? 'Deliberating...' : a.role}</div>
                   <div className="power-row">
                     <span className="pwr-left">PWR</span>
                     <span className="pwr-right">{a.score}</span>
@@ -720,6 +721,15 @@ export default function Panel() {
                       <option value="Cloud (Gemini)">Cloud (Gemini)</option>
                       <option value="Local (Ollama)">Local (Ollama)</option>
                     </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label>Model Name</label>
+                    <input type="text" className="custom-input" value={agents[activeEditIndex].model || 'gemini-3.1-pro-preview'} onChange={(e) => {
+                      const newAgents = [...agents];
+                      newAgents[activeEditIndex].model = e.target.value;
+                      setAgents(newAgents);
+                    }} />
                   </div>
 
                   <div className="form-group">

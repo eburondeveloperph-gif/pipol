@@ -3,6 +3,14 @@ import { MASTER_PANEL_PROMPT } from "./prompts";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+export interface MemoryBoard {
+  facts: string[];
+  assumptions: string[];
+  conflicts: string[];
+  decisions: string[];
+  openQuestions: string[];
+}
+
 export async function* generatePanelDiscussion(
   topic: string, 
   agents: any[], 
@@ -16,98 +24,132 @@ export async function* generatePanelDiscussion(
   ollamaUrl: string = 'http://localhost:11434',
   ollamaModel: string = 'gemma'
 ) {
-  const runtimeInstruction = `
-PROJECT_REQUEST:
-${topic}
+  // 1. Initialize Shared Memory
+  const memoryBoard: MemoryBoard = {
+    facts: [`Project Topic: ${topic}`],
+    assumptions: [],
+    conflicts: [],
+    decisions: [],
+    openQuestions: []
+  };
 
-USER_PREFERENCES:
-${options.userPreferences || 'The first phase must feel like a real internal panel discussion with 5 agents and a manager. It must feel human, realistic, and technically grounded. CRITICAL: You MUST use natural human-like conversational elements. Include occasional reaction tags (e.g., [pauses], [sighs], [a little annoyed]), simulate partial overlaps (e.g., [cuts in]), and ensure agents do NOT agree instantly. Use conversational fillers like "um", "uh", "look", "actually". Make the panel feel highly dynamic, slightly messy like a real meeting, and realistic.'}
+  const conversationHistory: { role: string, content: string }[] = [];
 
-PLATFORM_TARGET:
-${options.platformTarget || 'Web app'}
+  const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
+  const specialists = agents.filter(a => a.role !== 'Manager' && a.id !== 0);
 
-REQUIRED_FEATURES:
-${(options.requiredFeatures || [
-  'internal multi-agent panel discussion',
-  'manager-led convergence',
-  'brief summary',
-  'detailed todo list',
-  'approval gate',
-  'eventual end-to-end production workflow'
-]).map(f => `- ${f}`).join('\n')}
+  // 2. Manager Opens the Meeting
+  yield* runAgentTurn(manager, `Open the meeting for the topic: "${topic}". Frame the project and set the initial direction.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
 
-OUTPUT_REQUIREMENT:
-Simulate a realistic 5-10 minutes internal panel meeting, then present the final structured plan.
+  // 3. Discussion Loop (Simplified for now: each specialist speaks once)
+  // In a more complex version, the Manager would decide who speaks next.
+  for (const agent of specialists) {
+    if (signal?.aborted) break;
+    yield* runAgentTurn(agent, `Contribute to the discussion about "${topic}" from your perspective as ${agent.role}. React to what others have said.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
+  }
+
+  // 4. Manager Verdict and Final Plan
+  yield* runAgentTurn(manager, `Summarize the discussion, make final decisions, and present the FINAL_PLAN including the Shared Memory Board.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, true);
+}
+
+async function* runAgentTurn(
+  agent: any,
+  instruction: string,
+  history: { role: string, content: string }[],
+  memory: MemoryBoard,
+  allAgents: any[],
+  options: any,
+  signal?: AbortSignal,
+  ollamaUrl?: string,
+  ollamaModel?: string,
+  isFinalVerdict: boolean = false
+) {
+  const memoryContext = `
+SHARED MEMORY BOARD:
+- FACTS: ${memory.facts.join(', ')}
+- ASSUMPTIONS: ${memory.assumptions.join(', ')}
+- CONFLICTS: ${memory.conflicts.join(', ')}
+- DECISIONS: ${memory.decisions.join(', ')}
+- OPEN QUESTIONS: ${memory.openQuestions.join(', ')}
 `;
 
-  // Since the panel discussion is generated via a single monolithic prompt,
-  // we use the Manager's provider to determine the engine for the entire discussion.
-  const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
-  const useOllama = manager?.provider === 'Local (Ollama)';
+  const agentPersona = `
+You are ${agent.name}, the ${agent.role}.
+Your personality: ${agent.role === 'Manager' ? 'Leader, decisive, focused on convergence.' : 'Specialist, opinionated, focused on your domain.'}
+${options.systemInstruction || MASTER_PANEL_PROMPT}
 
-  if (useOllama) {
+CURRENT TASK: ${instruction}
+${isFinalVerdict ? 'CRITICAL: You must end your response with "### FINAL_PLAN ###" followed by the structured plan and the final Shared Memory Board.' : ''}
+`;
+
+  const prompt = `
+${memoryContext}
+${history.map(h => `[${h.role}]: ${h.content}`).join('\n')}
+
+[SYSTEM]: ${agent.name}, it is your turn. ${instruction}
+`;
+
+  let fullResponse = "";
+
+  if (agent.provider === 'Local (Ollama)') {
     const response = await fetch(`${ollamaUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: ollamaModel,
-        prompt: (options.systemInstruction || MASTER_PANEL_PROMPT) + '\n\n' + runtimeInstruction,
+        model: agent.model || ollamaModel,
+        system: agentPersona,
+        prompt: prompt,
         stream: true
       }),
       signal
     });
 
     if (!response.body) throw new Error('No response body from Ollama');
-    
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     
+    yield `[${agent.name}]: `;
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      
       for (const line of lines) {
         if (line.trim()) {
           try {
             const json = JSON.parse(line);
             if (json.response) {
+              fullResponse += json.response;
               yield json.response;
             }
-          } catch (e) {
-            console.error("Error parsing Ollama response:", e);
-          }
+          } catch (e) {}
         }
       }
-    }
-    if (buffer.trim()) {
-      try {
-        const json = JSON.parse(buffer);
-        if (json.response) {
-          yield json.response;
-        }
-      } catch (e) {}
     }
   } else {
     const responseStream = await ai.models.generateContentStream({
-      model: "gemini-3.1-pro-preview",
-      contents: runtimeInstruction,
+      model: agent.model || "gemini-3.1-pro-preview",
+      contents: prompt,
       config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-        systemInstruction: options.systemInstruction || MASTER_PANEL_PROMPT,
+        systemInstruction: agentPersona,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
       }
     });
 
+    yield `[${agent.name}]: `;
     for await (const chunk of responseStream) {
       if (chunk.text) {
+        fullResponse += chunk.text;
         yield chunk.text;
       }
     }
   }
+
+  yield '\n';
+  history.push({ role: agent.name, content: fullResponse });
 }
 
 export async function generateTTS(text: string, voiceName: string = 'Kore') {
