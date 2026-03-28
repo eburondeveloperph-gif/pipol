@@ -19,12 +19,12 @@ const hexToRgb = (hex: string) => {
 };
 
 const defaultAgents = [
-  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr" },
-  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir" },
-  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore" },
-  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon" },
-  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Aoede" }
+  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)" },
+  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)" },
+  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)" },
+  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)" },
+  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)" },
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Aoede", provider: "Cloud (Gemini)" }
 ];
 
 interface Message {
@@ -59,6 +59,8 @@ export default function Panel() {
   const [memoryBoardContent, setMemoryBoardContent] = useState('');
   const [activeEditIndex, setActiveEditIndex] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
+  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
+  const [ollamaModel, setOllamaModel] = useState('gemma');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -143,7 +145,7 @@ export default function Panel() {
       let currentSpeaker = "";
       let currentMessageText = "";
 
-      for await (const chunk of generatePanelDiscussion(userMsg, agents, { systemInstruction: systemPrompt }, abortControllerRef.current.signal)) {
+      for await (const chunk of generatePanelDiscussion(userMsg, agents, { systemInstruction: systemPrompt }, abortControllerRef.current.signal, ollamaUrl, ollamaModel)) {
         if (abortControllerRef.current.signal.aborted) {
           break;
         }
@@ -476,6 +478,10 @@ export default function Panel() {
                   <div className="tab-color-dot" style={{ color: 'var(--text-main)', background: 'var(--text-main)' }}></div>
                   System Prompt
                 </div>
+                <div className={`agent-tab ${activeEditIndex === -2 ? 'active' : ''}`} onClick={() => setActiveEditIndex(-2)}>
+                  <div className="tab-color-dot" style={{ color: 'var(--text-main)', background: 'var(--text-main)' }}></div>
+                  Server
+                </div>
                 <div className="settings-sidebar-header" style={{ marginTop: '20px' }}>Neural Nodes</div>
                 {agents.map((a, i) => (
                   <div key={a.id} className={`agent-tab ${i === activeEditIndex ? 'active' : ''}`} onClick={() => setActiveEditIndex(i)} style={{ '--agent-color-rgb': a.rgba } as any}>
@@ -489,9 +495,15 @@ export default function Panel() {
             <div className="settings-body">
               <div className="settings-header">
                 <div>
-                  <h2>{activeEditIndex === -1 ? 'System Configuration' : 'Configure Agent'}</h2>
+                  <h2>
+                    {activeEditIndex === -1 ? 'System Configuration' : 
+                     activeEditIndex === -2 ? 'Server Configuration' : 
+                     'Configure Agent'}
+                  </h2>
                   <p>
-                    {activeEditIndex === -1 ? 'Edit the master prompt that orchestrates the panel.' : 'Fine-tune persona, visuals, and directives.'}
+                    {activeEditIndex === -1 ? 'Edit the master prompt that orchestrates the panel.' : 
+                     activeEditIndex === -2 ? 'Configure local and cloud model providers.' :
+                     'Fine-tune persona, visuals, and directives.'}
                   </p>
                 </div>
                 <button onClick={() => setShowSettings(false)} className="btn-icon"><X /></button>
@@ -507,6 +519,31 @@ export default function Panel() {
                       value={systemPrompt} 
                       onChange={(e) => setSystemPrompt(e.target.value)} 
                     />
+                  </div>
+                </div>
+              ) : activeEditIndex === -2 ? (
+                <div className="form-grid">
+                  <div className="form-group full">
+                    <label>Ollama Localhost URL</label>
+                    <input 
+                      type="text" 
+                      className="custom-input" 
+                      value={ollamaUrl} 
+                      onChange={(e) => setOllamaUrl(e.target.value)} 
+                      placeholder="http://localhost:11434"
+                    />
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>Ensure your local Ollama instance is running and accessible.</p>
+                  </div>
+                  <div className="form-group full">
+                    <label>Ollama Model Name</label>
+                    <input 
+                      type="text" 
+                      className="custom-input" 
+                      value={ollamaModel} 
+                      onChange={(e) => setOllamaModel(e.target.value)} 
+                      placeholder="gemma"
+                    />
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>The model to use when an agent is set to Local (Ollama).</p>
                   </div>
                 </div>
               ) : agents[activeEditIndex] && (
@@ -527,6 +564,18 @@ export default function Panel() {
                       newAgents[activeEditIndex].role = e.target.value;
                       setAgents(newAgents);
                     }} />
+                  </div>
+
+                  <div className="form-group">
+                    <label>Model Provider</label>
+                    <select className="custom-input" value={agents[activeEditIndex].provider || 'Cloud (Gemini)'} onChange={(e) => {
+                      const newAgents = [...agents];
+                      newAgents[activeEditIndex].provider = e.target.value;
+                      setAgents(newAgents);
+                    }}>
+                      <option value="Cloud (Gemini)">Cloud (Gemini)</option>
+                      <option value="Local (Ollama)">Local (Ollama)</option>
+                    </select>
                   </div>
 
                   <div className="form-group">

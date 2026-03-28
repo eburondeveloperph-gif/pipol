@@ -12,7 +12,9 @@ export async function* generatePanelDiscussion(
     userPreferences?: string;
     systemInstruction?: string;
   } = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  ollamaUrl: string = 'http://localhost:11434',
+  ollamaModel: string = 'gemma'
 ) {
   const runtimeInstruction = `
 PROJECT_REQUEST:
@@ -38,18 +40,72 @@ OUTPUT_REQUIREMENT:
 Simulate a realistic 5-10 minutes internal panel meeting, then present the final structured plan.
 `;
 
-  const responseStream = await ai.models.generateContentStream({
-    model: "gemini-3-flash-preview",
-    contents: runtimeInstruction,
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-      systemInstruction: options.systemInstruction || MASTER_PANEL_PROMPT,
-    }
-  });
+  // Since the panel discussion is generated via a single monolithic prompt,
+  // we use the Manager's provider to determine the engine for the entire discussion.
+  const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
+  const useOllama = manager?.provider === 'Local (Ollama)';
 
-  for await (const chunk of responseStream) {
-    if (chunk.text) {
-      yield chunk.text;
+  if (useOllama) {
+    const response = await fetch(`${ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel,
+        prompt: (options.systemInstruction || MASTER_PANEL_PROMPT) + '\n\n' + runtimeInstruction,
+        stream: true
+      }),
+      signal
+    });
+
+    if (!response.body) throw new Error('No response body from Ollama');
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const json = JSON.parse(line);
+            if (json.response) {
+              yield json.response;
+            }
+          } catch (e) {
+            console.error("Error parsing Ollama response:", e);
+          }
+        }
+      }
+    }
+    if (buffer.trim()) {
+      try {
+        const json = JSON.parse(buffer);
+        if (json.response) {
+          yield json.response;
+        }
+      } catch (e) {}
+    }
+  } else {
+    const responseStream = await ai.models.generateContentStream({
+      model: "gemini-3.1-flash-lite-preview",
+      contents: runtimeInstruction,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+        systemInstruction: options.systemInstruction || MASTER_PANEL_PROMPT,
+      }
+    });
+
+    for await (const chunk of responseStream) {
+      if (chunk.text) {
+        yield chunk.text;
+      }
     }
   }
 }
