@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { generatePanelDiscussion, generateTTS } from '../lib/gemini';
 import { MASTER_PANEL_PROMPT } from '../lib/prompts';
-import { Hexagon, SlidersHorizontal, Mic, Send, AudioLines, X, UserPlus, Trash2, Image as ImageIcon, Cpu, User, Star, Volume2 } from 'lucide-react';
+import { Hexagon, SlidersHorizontal, Mic, Send, AudioLines, X, UserPlus, Trash2, Image as ImageIcon, Cpu, User, Star, Volume2, Moon, Sun, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 const dummyImages = [
@@ -13,13 +13,18 @@ const dummyImages = [
   "https://freepngimg.com/thumb/robot/2-2-robot-transparent.png"
 ];
 
+const hexToRgb = (hex: string) => {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}` : '255, 255, 255';
+};
+
 const defaultAgents = [
-  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", img: dummyImages[0], score: 100, voice: "Zephyr" },
-  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", img: dummyImages[1], score: 100, voice: "Fenrir" },
-  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", img: dummyImages[2], score: 100, voice: "Kore" },
-  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", img: dummyImages[3], score: 100, voice: "Charon" },
-  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", img: dummyImages[4], score: 100, voice: "Puck" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", img: dummyImages[5], score: 100, voice: "Kore" }
+  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr" },
+  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir" },
+  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore" },
+  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon" },
+  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck" },
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Aoede" }
 ];
 
 interface Message {
@@ -42,11 +47,8 @@ export default function Panel() {
     }
   ]);
 
-  const formatMessageText = (text: string) => {
-    if (!text) return '';
-    // Replace [action] tags with a styled span, matching letters, numbers, spaces, and basic punctuation, avoiding markdown links
-    return text.replace(/\[([a-zA-Z0-9\s\-,.]+)\](?!\()/g, '<span class="reaction-tag">[$1]</span>');
-  };
+  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [systemPrompt, setSystemPrompt] = useState(MASTER_PANEL_PROMPT);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -60,6 +62,11 @@ export default function Panel() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
+  const initialInputRef = useRef('');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -69,15 +76,15 @@ export default function Panel() {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       recognitionRef.current = new SpeechRec();
-      recognitionRef.current.continuous = false;
+      recognitionRef.current.continuous = true;
       recognitionRef.current.interimResults = true;
 
       recognitionRef.current.onresult = (event: any) => {
         let text = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
+        for (let i = 0; i < event.results.length; i++) {
           text += event.results[i][0].transcript;
         }
-        setInput(text);
+        setInput((initialInputRef.current ? initialInputRef.current + ' ' : '') + text);
       };
 
       recognitionRef.current.onend = () => {
@@ -91,6 +98,11 @@ export default function Panel() {
     }
   }, []);
 
+  const formatMessageText = (text: string) => {
+    if (!text) return '';
+    return text.replace(/\[([a-zA-Z0-9\s\-,.]+)\](?!\()/g, '<span class="reaction-tag" style="opacity: 0.7; font-style: italic; font-size: 0.9em;">[$1]</span>');
+  };
+
   const toggleMic = () => {
     if (!recognitionRef.current) {
       alert("Speech Recognition API is not supported in this browser.");
@@ -99,7 +111,7 @@ export default function Panel() {
     if (isRecording) {
       recognitionRef.current.stop();
     } else {
-      setInput('');
+      initialInputRef.current = input;
       recognitionRef.current.start();
       setIsRecording(true);
     }
@@ -158,7 +170,6 @@ export default function Panel() {
             const memoryBoardMatch = currentFinalPlan.match(/SECTION 6 — SHARED MEMORY BOARD\n([\s\S]*)/i);
             if (memoryBoardMatch) {
               setMemoryBoardContent(memoryBoardMatch[1]);
-              // Remove memory board from the final plan message so it doesn't show twice
               const planWithoutMemory = currentFinalPlan.replace(/SECTION 6 — SHARED MEMORY BOARD\n[\s\S]*/i, '');
               updateFinalPlanMessage(planWithoutMemory);
             } else {
@@ -284,8 +295,16 @@ export default function Panel() {
   return (
     <>
       <header>
-        <div className="logo"><Hexagon /><span>STRATEGY NEXUS</span></div>
         <div className="flex items-center gap-4">
+          <button className="btn-icon" onClick={() => setIsSidebarOpen(!isSidebarOpen)} title="Toggle Sidebar">
+            {isSidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+          </button>
+          <div className="logo"><Hexagon /><span>STRATEGY NEXUS</span></div>
+        </div>
+        <div className="header-actions">
+          <button className="btn-icon" onClick={() => setIsDarkMode(!isDarkMode)} title="Toggle Theme">
+            {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
           <button 
             className={`btn-icon ${memoryBoardContent ? 'text-blue-400 border-blue-400' : ''}`} 
             onClick={() => setShowMemoryBoard(!showMemoryBoard)} 
@@ -300,36 +319,10 @@ export default function Panel() {
       </header>
 
       <main id="main-layout">
-        <div id="avatar-section">
-          <div id="avatar-container">
-            {agents.map((a, i) => {
-              const isActive = activeAgentName === a.name;
-              return (
-                <div key={a.id} className={`agent-slot ${isActive ? 'active' : ''}`} style={{ '--agent-color': a.hex } as any}>
-                  <button className="star-btn" onClick={() => rewardAgent(i)} title="Reward Idea">
-                    <Star size={14} fill="currentColor" />
-                  </button>
-                  <div className="avatar-frame">
-                    <img src={a.img} className="agent-img" alt={a.name} />
-                  </div>
-                  <div className="visualizer">
-                    <div className="bar"></div><div className="bar"></div><div className="bar"></div><div className="bar"></div><div className="bar"></div>
-                  </div>
-                  <div className="agent-info">
-                    <div className="agent-name" style={{ color: a.hex }}>{a.name}</div>
-                    <div className="status-text">{isActive ? 'Speaking...' : 'Standby'}</div>
-                    <div className="score-badge">PWR: <span>{a.score}</span></div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div id="chat-section">
+        <div id="left-sidebar" className={!isSidebarOpen ? 'collapsed' : ''}>
           <div id="chat-window">
             {messages.map((msg) => (
-              <div key={msg.id} className={`message ${msg.type}`}>
+              <div key={msg.id} className={msg.type === 'system-msg' ? 'system-msg' : `message ${msg.type}`}>
                 {msg.type === 'agent-message' && (
                   <div className="agent-msg-name" style={{ color: msg.colorHex }}>
                     <div className="flex items-center gap-2">
@@ -356,7 +349,7 @@ export default function Panel() {
                 {msg.isFinalPlan ? (
                   <div className="markdown-body text-left w-full">
                     <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
-                      <h3 className="text-xl font-bold text-white m-0">Final Project Plan</h3>
+                      <h3 className="text-xl font-bold m-0">Final Project Plan</h3>
                       <button onClick={() => playTTS(msg.text, agents[0]?.voice || 'Zephyr')} className="p-2 bg-blue-600 hover:bg-blue-500 rounded-full text-white transition-colors" title="Read Aloud">
                         <Volume2 size={16} />
                       </button>
@@ -392,53 +385,80 @@ export default function Panel() {
           </div>
 
           <div id="controls-wrapper">
-            <div id="controls">
-              <button id="mic-btn" className={`control-btn mic-btn ${isRecording ? 'recording' : ''}`} onClick={toggleMic} title="Voice to Text">
-                <Mic />
-              </button>
-              
-              <div className="input-group">
-                <input 
-                  type="text" 
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder={isProcessing ? "Agents are deliberating..." : "Give the initial task or strategic prompt..."}
-                  disabled={isProcessing}
-                />
-              </div>
-
-              <button id="send-btn" className="control-btn send-btn" onClick={() => handleSend()} title="Send Prompt" disabled={isProcessing || !input.trim()}>
-                <Send />
-              </button>
-
-              <button id="interrupt-btn" className={`control-btn interrupt-btn ${isProcessing ? 'enabled' : ''}`} onClick={handleInterrupt} title="Interrupt Agents" disabled={!isProcessing}>
-                <AudioLines />
-                <span style={{ fontSize: '0.85rem' }}>HALT</span>
-              </button>
+            <button className={`mic-btn ${isRecording ? 'recording' : ''}`} onClick={toggleMic} title="Voice to Text">
+              <Mic size={20} />
+            </button>
+            
+            <div className="input-group">
+              <input 
+                type="text" 
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                placeholder={isProcessing ? "Agents are deliberating..." : "Give the initial task or strategic prompt..."}
+                disabled={isProcessing}
+              />
             </div>
+
+            <button className="send-btn" onClick={() => handleSend()} title="Send Prompt" disabled={isProcessing || !input.trim()}>
+              <Send size={20} />
+            </button>
+
+            <button className={`interrupt-btn ${isProcessing ? 'enabled' : ''}`} onClick={handleInterrupt} title="Interrupt Agents" disabled={!isProcessing}>
+              <AudioLines size={18} />
+              <span>HALT</span>
+            </button>
           </div>
+        </div>
+
+        <div id="agent-grid">
+          {agents.map((a, i) => {
+            const isActive = activeAgentName === a.name;
+            return (
+              <div key={a.id} className={`agent-card ${isActive ? 'active' : ''}`} style={{ '--agent-color-rgb': a.rgba } as any}>
+                <div className="card-top">
+                  <img src={a.img} className="agent-img" alt={a.name} />
+                  <button className="star-btn" onClick={() => rewardAgent(i)} title="Reward Idea">
+                    <Star size={16} fill="currentColor" />
+                  </button>
+                </div>
+                <div className="card-bottom">
+                  <div className="agent-name">
+                    {a.name}
+                    <div className="visualizer">
+                      <div className="bar"></div><div className="bar"></div><div className="bar"></div>
+                    </div>
+                  </div>
+                  <div className="agent-status">{isActive ? 'Speaking...' : a.role}</div>
+                  <div className="power-row">
+                    <span className="pwr-left">PWR</span>
+                    <span className="pwr-right">{a.score}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </main>
 
       {showMemoryBoard && (
-        <div id="memory-board-modal" style={{ display: 'flex', opacity: 1 }} className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex justify-center items-center">
-          <div className="modal-content bg-[#14141c] border border-white/10 shadow-2xl w-[95%] max-w-3xl h-[80vh] rounded-2xl flex flex-col overflow-hidden">
-            <div className="settings-header p-6 border-b border-white/10 flex justify-between items-center bg-black/30">
+        <div id="settings-modal" style={{ display: 'flex', opacity: 1 }}>
+          <div className="modal-content" style={{ transform: 'scale(1)', flexDirection: 'column' }}>
+            <div className="settings-header" style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', margin: 0 }}>
               <div>
-                <h2 className="text-2xl font-light tracking-tight">Shared Memory Board</h2>
-                <p className="text-gray-400 text-sm mt-1">Facts, assumptions, conflicts, decisions, and open questions.</p>
+                <h2>Shared Memory Board</h2>
+                <p>Facts, assumptions, conflicts, decisions, and open questions.</p>
               </div>
               <button onClick={() => setShowMemoryBoard(false)} className="btn-icon"><X /></button>
             </div>
-            <div className="p-8 overflow-y-auto flex-1 markdown-body">
+            <div className="settings-body markdown-body">
               {memoryBoardContent ? (
                 <ReactMarkdown>{memoryBoardContent}</ReactMarkdown>
               ) : (
-                <div className="text-center text-gray-500 mt-20">
-                  <AudioLines size={48} className="mx-auto mb-4 opacity-20" />
+                <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '40px' }}>
+                  <AudioLines size={48} style={{ margin: '0 auto 15px auto', opacity: 0.2 }} />
                   <p>The memory board is empty.</p>
-                  <p className="text-sm mt-2">It will be populated at the end of the panel discussion.</p>
+                  <p style={{ fontSize: '0.85rem', marginTop: '10px' }}>It will be populated at the end of the panel discussion.</p>
                 </div>
               )}
             </div>
@@ -453,12 +473,12 @@ export default function Panel() {
               <div className="settings-sidebar-header">System</div>
               <div className="sidebar-scroll">
                 <div className={`agent-tab ${activeEditIndex === -1 ? 'active' : ''}`} onClick={() => setActiveEditIndex(-1)}>
-                  <div className="tab-color-dot" style={{ color: '#fff', background: '#fff' }}></div>
+                  <div className="tab-color-dot" style={{ color: 'var(--text-main)', background: 'var(--text-main)' }}></div>
                   System Prompt
                 </div>
-                <div className="settings-sidebar-header mt-4">Neural Nodes</div>
+                <div className="settings-sidebar-header" style={{ marginTop: '20px' }}>Neural Nodes</div>
                 {agents.map((a, i) => (
-                  <div key={a.id} className={`agent-tab ${i === activeEditIndex ? 'active' : ''}`} onClick={() => setActiveEditIndex(i)}>
+                  <div key={a.id} className={`agent-tab ${i === activeEditIndex ? 'active' : ''}`} onClick={() => setActiveEditIndex(i)} style={{ '--agent-color-rgb': a.rgba } as any}>
                     <div className="tab-color-dot" style={{ color: a.hex, background: a.hex }}></div>
                     {a.name}
                   </div>
@@ -470,7 +490,7 @@ export default function Panel() {
               <div className="settings-header">
                 <div>
                   <h2>{activeEditIndex === -1 ? 'System Configuration' : 'Configure Agent'}</h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '5px' }}>
+                  <p>
                     {activeEditIndex === -1 ? 'Edit the master prompt that orchestrates the panel.' : 'Fine-tune persona, visuals, and directives.'}
                   </p>
                 </div>
@@ -521,6 +541,7 @@ export default function Panel() {
                       <option value="Kore">Kore</option>
                       <option value="Fenrir">Fenrir</option>
                       <option value="Zephyr">Zephyr</option>
+                      <option value="Aoede">Aoede</option>
                     </select>
                   </div>
 
@@ -529,8 +550,35 @@ export default function Panel() {
                     <input type="text" className="custom-input" value={agents[activeEditIndex].hex} onChange={(e) => {
                       const newAgents = [...agents];
                       newAgents[activeEditIndex].hex = e.target.value;
+                      newAgents[activeEditIndex].rgba = hexToRgb(e.target.value);
                       setAgents(newAgents);
                     }} />
+                  </div>
+
+                  <div className="form-group full">
+                    <label>Agent Avatar</label>
+                    <div className="file-upload-zone" onClick={() => document.getElementById('avatar-upload')?.click()}>
+                      <ImageIcon size={24} style={{ margin: '0 auto 10px auto', color: 'var(--text-muted)' }} />
+                      <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Click to upload new avatar</p>
+                      <input 
+                        type="file" 
+                        id="avatar-upload" 
+                        style={{ display: 'none' }} 
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              const newAgents = [...agents];
+                              newAgents[activeEditIndex].img = reader.result as string;
+                              setAgents(newAgents);
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                      />
+                    </div>
                   </div>
                 </div>
               )}

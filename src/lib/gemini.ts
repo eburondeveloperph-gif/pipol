@@ -39,7 +39,7 @@ Simulate a realistic 5-10 minutes internal panel meeting, then present the final
 `;
 
   const responseStream = await ai.models.generateContentStream({
-    model: "gemini-3.1-pro-preview",
+    model: "gemini-3-flash-preview",
     contents: runtimeInstruction,
     config: {
       thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
