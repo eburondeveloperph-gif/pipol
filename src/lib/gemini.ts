@@ -14,12 +14,35 @@ export interface MemoryBoard {
 export async function generateAgentAvatar(prompt: string, options: { background?: 'white' | 'studio' | 'office' } = {}) {
   try {
     const bgPrompt = options.background === 'white' 
-      ? "isolated on a pure, solid white background, perfect for background removal to create a transparent look" 
+      ? "isolated on a pure, solid, flat white background (#FFFFFF). No shadows, no gradients, no environment, just the person on a clean white backdrop, perfect for background removal to create a transparent look" 
       : options.background === 'office'
       ? "in a modern, slightly blurred professional office environment"
       : "in a professional studio setting with neutral, clean lighting";
 
-    const response = await ai.models.generateImages({
+    // Prioritize Nano Banana (gemini-3.1-flash-image-preview) as requested
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.1-flash-image-preview',
+      contents: {
+        parts: [{ 
+          text: `A highly realistic, professional studio portrait of a unique human ${prompt}. ${bgPrompt}. The person should have distinct facial features, a specific ethnic background, and an intelligent expression matching their role. Photorealistic, 8k resolution, cinematic lighting, sharp focus, detailed skin texture, professional headshot. No text, no logos, no watermarks.` 
+        }],
+      },
+      config: { 
+        imageConfig: { 
+          aspectRatio: "1:1", 
+          imageSize: "1K" 
+        } 
+      },
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    }
+
+    // Fallback to Imagen if Nano Banana fails
+    const imagenResponse = await ai.models.generateImages({
       model: 'imagen-4.0-generate-001',
       prompt: `A highly realistic, professional studio portrait of a unique human ${prompt}. ${bgPrompt}. The person should have distinct facial features, a specific ethnic background, and an intelligent expression matching their role. Photorealistic, 8k resolution, cinematic lighting, sharp focus, detailed skin texture, professional headshot. No text, no logos, no watermarks.`,
       config: {
@@ -29,27 +52,13 @@ export async function generateAgentAvatar(prompt: string, options: { background?
       },
     });
 
-    if (response.generatedImages?.[0]?.image?.imageBytes) {
-      return `data:image/png;base64,${response.generatedImages[0].image.imageBytes}`;
+    if (imagenResponse.generatedImages?.[0]?.image?.imageBytes) {
+      return `data:image/png;base64,${imagenResponse.generatedImages[0].image.imageBytes}`;
     }
+    
     return null;
   } catch (error) {
     console.error("Avatar Generation Error:", error);
-    // Fallback to Gemini Flash if Imagen fails or is unavailable
-    try {
-      const fallbackResponse = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image-preview',
-        contents: {
-          parts: [{ text: `Highly realistic human portrait: ${prompt}. Isolated on white background.` }],
-        },
-        config: { imageConfig: { aspectRatio: "1:1", imageSize: "1K" } },
-      });
-      for (const part of fallbackResponse.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
-      }
-    } catch (e) {
-      console.error("Fallback Avatar Generation Error:", e);
-    }
     return null;
   }
 }
@@ -70,8 +79,8 @@ export async function* generatePanelDiscussion(
 ) {
   const discussionId = options.discussionId || `disc-${Date.now()}`;
   
-  const manager = agents.find(a => a.role === 'Manager' || a.role === 'Administrator' || a.id === 0);
-  const specialists = agents.filter(a => a.role !== 'Manager' && a.role !== 'Administrator' && a.id !== 0);
+  const manager = agents.find(a => a.role === 'Strategic Overseer' || a.role === 'Manager' || a.id === 0);
+  const specialists = agents.filter(a => a.role !== 'Strategic Overseer' && a.role !== 'Manager' && a.id !== 0);
 
   // 1. Yield Manager's name immediately for instant feedback
   yield `[${manager.name}]: `;
@@ -82,11 +91,11 @@ export async function* generatePanelDiscussion(
     const res = await fetch(`/api/memory/${discussionId}`);
     memoryBoard = await res.json();
     if (!memoryBoard.facts.length) {
-      memoryBoard.facts = [`Project Topic: ${topic}`];
+      memoryBoard.facts = [`Project Topic: ${topic}`, `Client: eburon.ai`];
     }
   } catch (e) {
     memoryBoard = {
-      facts: [`Project Topic: ${topic}`],
+      facts: [`Project Topic: ${topic}`, `Client: eburon.ai`],
       assumptions: [],
       conflicts: [],
       decisions: [],
@@ -96,8 +105,8 @@ export async function* generatePanelDiscussion(
 
   const conversationHistory: { role: string, content: string }[] = [];
 
-  // 3. Manager Opens the Meeting
-  yield* runAgentTurn(manager, `Open the meeting for the topic: "${topic}". Frame the project and set the initial direction.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, false, true);
+  // 3. Manager Opens the Meeting & Introductions
+  yield* runAgentTurn(manager, `Open the meeting for the topic: "${topic}" for client eburon.ai. Introduce yourself as the Strategic Overseer, ask all participants to briefly introduce themselves, and frame the project.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, false, true);
 
   // Update memory board from manager's opening
   const managerOpening = conversationHistory[conversationHistory.length - 1].content;
@@ -226,22 +235,23 @@ async function selectNextSpeaker(
   memoryBoard: MemoryBoard,
   topic: string
 ): Promise<{ nextAgentId: number, handRaisers: number[], shouldClose: boolean, reason: string }> {
-  const specialists = agents.filter(a => a.role !== 'Manager' && a.role !== 'Administrator' && a.id !== 0);
+  const specialists = agents.filter(a => a.role !== 'Strategic Overseer' && a.role !== 'Manager' && a.id !== 0);
 
   const prompt = `
-You are the Administrator (Nexus). Based on the conversation history and the current memory board, decide who should speak next in the panel discussion about "${topic}".
+You are the Strategic Overseer (Master). Based on the conversation history and the current memory board, decide who should speak next in the panel discussion about "${topic}" for client eburon.ai.
 
 SPECIALISTS:
 ${specialists.map(s => `- ID ${s.id}: ${s.name} (${s.role})`).join('\n')}
 
 RULES:
-1. If someone was directly challenged or asked a question, they should likely speak next.
-2. If a new topic was raised, the relevant specialist should speak.
-3. If the discussion is circling, pick someone who hasn't spoken much.
-4. Identify agents who would "raise their hand" (want to interject or build upon the point).
-5. If the discussion has reached a natural conclusion or all points are covered, set shouldClose to true.
-6. Limit the total turns to around 10-12.
-7. Ensure every specialist speaks at least once early in the discussion.
+1. Ensure every specialist introduces themselves briefly at the start.
+2. If someone was directly challenged or asked a question, they should likely speak next.
+3. If a new topic was raised, the relevant specialist should speak.
+4. If the discussion is circling, pick someone who hasn't spoken much.
+5. Identify agents who would "raise their hand" (want to interject or build upon the point).
+6. If the discussion has reached a natural conclusion or all points are covered, set shouldClose to true.
+7. Limit the total turns to around 15-20 for a fast-paced discussion.
+8. Ensure every specialist speaks at least once early in the discussion.
 
 RESPONSE FORMAT (JSON ONLY):
 {
@@ -306,7 +316,7 @@ SHARED MEMORY BOARD:
 
   const agentPersona = `
 You are ${agent.name}, the ${agent.role}.
-Your personality: ${(agent.role === 'Manager' || agent.role === 'Administrator') ? 'Leader, decisive, focused on convergence.' : 'Specialist, opinionated, focused on your domain.'}
+Your personality: ${(agent.role === 'Strategic Overseer' || agent.role === 'Manager') ? 'Leader, decisive, focused on convergence.' : 'Specialist, opinionated, focused on your domain.'}
 ${options.systemInstruction || MASTER_PANEL_PROMPT}
 
 CURRENT TASK: ${instruction}
@@ -383,17 +393,36 @@ ${history.map(h => `[${h.role}]: ${h.content}`).join('\n')}
   history.push({ role: agent.name, content: fullResponse });
 }
 
-export async function generateTTS(text: string, voiceName: string = 'Kore') {
+export async function generateTTS(text: string, voiceName: string = 'Kore', pitch: number = 1.0, retryCount = 0): Promise<string | null> {
+  if (!text || text.trim().length === 0) return null;
+
+  // 1. Strip Markdown and common special characters that might confuse TTS
+  let cleanText = text
+    .replace(/[*_#`~>]/g, '') // Strip markdown symbols
+    .replace(/\[.*?\]/g, '')  // Strip bracketed text (like [pauses]) for now to see if it helps stability
+    .replace(/\s+/g, ' ')     // Normalize whitespace
+    .trim()
+    .slice(0, 800);           // Slightly shorter truncation for safety
+
+  if (cleanText.length === 0) return null;
+
+  // Map pitch value to a descriptive instruction for the model
+  let pitchInstruction = "";
+  if (pitch > 1.2) pitchInstruction = "high-pitched and energetic";
+  else if (pitch > 1.05) pitchInstruction = "slightly higher-pitched";
+  else if (pitch < 0.8) pitchInstruction = "deep, low-pitched and authoritative";
+  else if (pitch < 0.95) pitchInstruction = "slightly lower-pitched";
+  else pitchInstruction = "natural-pitched";
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: [{ text: `Speak this ${pitchInstruction}: ${cleanText}` }] }],
       config: {
-        systemInstruction: "You are a highly expressive voice actor. Speak naturally, with human-like prosody, emotion, and pacing. If the text includes reaction tags like [pauses], [sighs], [laughs], or [clears throat], perform those actions naturally instead of reading the words literally. Maintain the specific persona of the character you are voicing.",
+        // Removing systemInstruction as it might be causing instability in the preview model
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            // Fallback to Zephyr if voiceName is not in the standard list
             prebuiltVoiceConfig: { 
               voiceName: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'].includes(voiceName) ? voiceName : 'Zephyr' 
             },
@@ -402,18 +431,93 @@ export async function generateTTS(text: string, voiceName: string = 'Kore') {
       },
     });
 
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    let base64Audio = "";
+    let mimeType = "";
+
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        base64Audio = part.inlineData.data;
+        mimeType = part.inlineData.mimeType || "audio/pcm";
+        break;
+      }
+    }
+
     if (base64Audio) {
-      const binary = atob(base64Audio);
+      // Remove any whitespace from base64 string
+      const cleanBase64 = base64Audio.replace(/\s/g, '');
+      const binary = atob(cleanBase64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
       }
-      const blob = new Blob([bytes], { type: 'audio/wav' });
+
+      console.log(`TTS Received: ${bytes.length} bytes, MimeType: ${mimeType}`);
+
+      // If it's raw PCM or explicitly labeled as PCM/WAV without header
+      if (mimeType.includes('pcm') || !mimeType || mimeType === 'audio/wav') {
+        const isWav = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+        if (!isWav) {
+          console.log("Adding WAV header to raw PCM data...");
+          const blob = addWavHeader(bytes, 24000);
+          return URL.createObjectURL(blob);
+        }
+      }
+
+      const blob = new Blob([bytes], { type: mimeType || 'audio/wav' });
       return URL.createObjectURL(blob);
     }
-  } catch (error) {
-    console.error("TTS Error:", error);
+    console.warn("TTS Response contained no audio data parts.");
+    return null;
+  } catch (error: any) {
+    console.error(`TTS Error (Attempt ${retryCount + 1}):`, error);
+    
+    // Retry up to 2 times with exponential backoff
+    if (retryCount < 2) {
+      const delay = Math.pow(2, retryCount) * 1000;
+      console.log(`Retrying TTS in ${delay}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+      return generateTTS(text, voiceName, pitch, retryCount + 1);
+    }
+    
     return null;
   }
+}
+
+/**
+ * Adds a WAV header to raw 16-bit PCM data.
+ * Gemini TTS returns raw PCM (16-bit, mono, 24kHz).
+ */
+function addWavHeader(pcmData: Uint8Array, sampleRate: number = 24000): Blob {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+
+  // RIFF identifier
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  // file length
+  view.setUint32(4, 36 + pcmData.length, true);
+  // RIFF type
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  // format chunk identifier
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  // format chunk length
+  view.setUint32(16, 16, true);
+  // sample format (1 for PCM)
+  view.setUint16(20, 1, true);
+  // channel count (1 for mono)
+  view.setUint16(22, 1, true);
+  // sample rate
+  view.setUint32(24, sampleRate, true);
+  // byte rate (sample rate * block align)
+  view.setUint32(28, sampleRate * 2, true);
+  // block align (channel count * bytes per sample)
+  view.setUint16(32, 2, true);
+  // bits per sample
+  view.setUint16(34, 16, true);
+  // data chunk identifier
+  view.setUint32(36, 0x64617461, false); // "data"
+  // data chunk length
+  view.setUint32(40, pcmData.length, true);
+
+  return new Blob([header, pcmData], { type: 'audio/wav' });
 }

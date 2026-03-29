@@ -1,5 +1,5 @@
 {
-  "name": "Pipol - Panel Deliberation Engine",
+  "name": "Eburon Hub",
   "description": "A simulated human-style panel meeting with 5 specialist AI agents and 1 manager agent to explore feasibility, product value, technical reality, user satisfaction, and risks before generating a final project workflow.",
   "requestFramePermissions": ["microphone"]
 }

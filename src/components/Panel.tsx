@@ -19,13 +19,45 @@ const hexToRgb = (hex: string) => {
   return result ? `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}` : '255, 255, 255';
 };
 
+const removeWhiteBackground = (base64: string): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(base64);
+        return;
+      }
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        // If pixel is very close to white, make it transparent
+        if (r > 245 && g > 245 && b > 245) {
+          data[i + 3] = 0;
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(base64);
+    img.src = base64;
+  });
+};
+
 const defaultAgents = [
-  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
-  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
-  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
-  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
-  { id: 0, name: "Nexus", role: "Administrator", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Aoide", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" }
+  { id: 1, name: "Zeus", role: "Tactical Lead", gender: "male", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", pitch: 1.0, provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 2, name: "Aquiles", role: "Execution Specialist", gender: "male", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", pitch: 1.0, provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 3, name: "Maximus", role: "Systems Navigator", gender: "male", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", pitch: 1.0, provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 4, name: "Orbit", role: "Communication Analyst", gender: "female", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", pitch: 1.0, provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 5, name: "Echo", role: "Research Analyst", gender: "female", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Zephyr", pitch: 1.0, provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 0, name: "Master", role: "Strategic Overseer", gender: "male", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Charon", pitch: 1.0, provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" }
 ];
 
 interface Message {
@@ -84,7 +116,7 @@ export default function Panel() {
   const recognitionRef = useRef<any>(null);
   const inputRef = useRef('');
   const initialInputRef = useRef('');
-  const audioQueueRef = useRef<{ text: string, voice: string, agentName: string }[]>([]);
+  const audioQueueRef = useRef<{ text: string, voice: string, pitch: number, agentName: string }[]>([]);
   const isPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -95,11 +127,16 @@ export default function Panel() {
         const res = await fetch('/api/avatars');
         if (res.ok) {
           const savedAvatars = await res.json();
-          if (Array.isArray(savedAvatars)) {
+          if (Array.isArray(savedAvatars) && savedAvatars.length > 0) {
             setAgents(prev => prev.map(agent => {
               const saved = savedAvatars.find((s: any) => s.id === agent.id);
               return saved ? { ...agent, img: saved.img } : agent;
             }));
+          } else {
+            // If no avatars saved, trigger generation automatically on first load
+            // to fulfill the user's request to "populate" them.
+            console.log("No saved avatars found. Triggering AI generation...");
+            triggerInitialAvatarGeneration();
           }
         }
       } catch (e) {
@@ -108,6 +145,13 @@ export default function Panel() {
     };
     loadAvatars();
   }, []);
+
+  const triggerInitialAvatarGeneration = async () => {
+    // We use a small delay to ensure everything is initialized
+    setTimeout(() => {
+      regenerateAvatars();
+    }, 2000);
+  };
 
   useEffect(() => {
     socketRef.current = io();
@@ -153,31 +197,42 @@ export default function Panel() {
     setPlayingAgentName(item.agentName);
     
     try {
-      const url = await generateTTS(item.text, item.voice);
+      const url = await generateTTS(item.text, item.voice, item.pitch);
       if (url) {
-        const audio = new Audio(url);
+        const audio = new Audio();
+        audio.src = url;
         audio.muted = isMuted;
         currentAudioRef.current = audio;
+
+        const cleanup = () => {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          currentAudioRef.current = null;
+        };
+
         audio.onended = () => {
-          setPlayingAgentName(null);
-          isPlayingRef.current = false;
-          currentAudioRef.current = null;
+          cleanup();
           if (audioQueueRef.current.length === 0 && isHandsFree) {
             setTimeout(() => toggleMic(), 500);
           } else {
             processAudioQueue();
           }
         };
-        audio.onerror = () => {
-          setPlayingAgentName(null);
-          isPlayingRef.current = false;
-          currentAudioRef.current = null;
+
+        audio.onerror = (e) => {
+          console.error("Audio Playback Error Details:", {
+            error: audio.error,
+            src: audio.src,
+            item
+          });
+          cleanup();
           if (audioQueueRef.current.length === 0 && isHandsFree) {
             setTimeout(() => toggleMic(), 500);
           } else {
             processAudioQueue();
           }
         };
+
         await audio.play();
       } else {
         setPlayingAgentName(null);
@@ -185,14 +240,15 @@ export default function Panel() {
         processAudioQueue();
       }
     } catch (e) {
+      console.error("TTS Processing Error:", e);
       setPlayingAgentName(null);
       isPlayingRef.current = false;
       processAudioQueue();
     }
   };
 
-  const enqueueAudio = (text: string, voice: string, agentName: string) => {
-    audioQueueRef.current.push({ text, voice, agentName });
+  const enqueueAudio = (text: string, voice: string, pitch: number, agentName: string) => {
+    audioQueueRef.current.push({ text, voice, pitch, agentName });
     processAudioQueue();
   };
 
@@ -208,24 +264,34 @@ export default function Panel() {
     isPlayingRef.current = true;
 
     try {
-      const url = await generateTTS(text, agent.voice);
+      const url = await generateTTS(text, agent.voice, agent.pitch || 1.0);
       if (url) {
-        const audio = new Audio(url);
+        const audio = new Audio();
+        audio.src = url;
         audio.muted = isMuted;
         currentAudioRef.current = audio;
+
+        const cleanup = () => {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          currentAudioRef.current = null;
+        };
+
         audio.onended = () => {
-          setPlayingAgentName(null);
-          isPlayingRef.current = false;
-          currentAudioRef.current = null;
-          // Resume queue if any
+          cleanup();
           processAudioQueue();
         };
-        audio.onerror = () => {
-          setPlayingAgentName(null);
-          isPlayingRef.current = false;
-          currentAudioRef.current = null;
+
+        audio.onerror = (e) => {
+          console.error("Manual TTS Playback Error Details:", {
+            error: audio.error,
+            src: audio.src,
+            agentName: agent.name
+          });
+          cleanup();
           processAudioQueue();
         };
+
         await audio.play();
       } else {
         setPlayingAgentName(null);
@@ -409,7 +475,7 @@ export default function Panel() {
             for (const sentence of parts) {
               if (sentence.trim().length > 5) {
                 const agent = agents.find(a => a.name === currentSpeaker);
-                if (agent) enqueueAudio(sentence.trim(), agent.voice, agent.name);
+                if (agent) enqueueAudio(sentence.trim(), agent.voice, agent.pitch || 1.0, agent.name);
               }
             }
           }
@@ -453,7 +519,7 @@ export default function Panel() {
               // Enqueue leftover sentence buffer before switching speakers
               if (sentenceBuffer.trim().length > 0) {
                 const agent = agents.find(a => a.name === currentSpeaker);
-                if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.name);
+                if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name);
                 sentenceBuffer = "";
               }
               commitMessage(currentSpeaker, currentMessageText, true);
@@ -489,7 +555,7 @@ export default function Panel() {
           // Enqueue leftover sentence buffer
           if (sentenceBuffer.trim().length > 0) {
             const agent = agents.find(a => a.name === currentSpeaker);
-            if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.name);
+            if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name);
             sentenceBuffer = "";
           }
           commitMessage(currentSpeaker, currentMessageText, true);
@@ -498,7 +564,7 @@ export default function Panel() {
          // Enqueue leftover sentence buffer
          if (sentenceBuffer.trim().length > 0) {
            const agent = agents.find(a => a.name === currentSpeaker);
-           if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.name);
+           if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name);
            sentenceBuffer = "";
          }
          commitMessage(currentSpeaker, currentMessageText, true);
@@ -531,7 +597,7 @@ export default function Panel() {
     }]);
     
     if (agent && !skipAudio) {
-      enqueueAudio(text.trim(), agent.voice, agent.name);
+      enqueueAudio(text.trim(), agent.voice, agent.pitch || 1.0, agent.name);
     }
   };
 
@@ -553,10 +619,22 @@ export default function Panel() {
   };
 
   const regenerateAvatars = async () => {
+    if (isGeneratingAvatars) return;
     setIsGeneratingAvatars(true);
+    
+    setMessages(prev => [...prev, {
+      id: 'avatar-gen-' + Date.now(),
+      sender: 'System',
+      text: '<b>AI Avatar Generation Initiated.</b><br>Creating unique professional portraits for all agents using Nano Banana (Gemini 3.1 Flash Image). This may take a few moments...',
+      type: 'system-msg'
+    }]);
+
     try {
       const newAgents = await Promise.all(agents.map(async (agent) => {
-        const avatar = await generateAgentAvatar(`${agent.role} named ${agent.name}`, { background: avatarBgStyle });
+        let avatar = await generateAgentAvatar(`${agent.gender || 'person'} ${agent.role} named ${agent.name}`, { background: avatarBgStyle });
+        if (avatar && avatarBgStyle === 'white') {
+          avatar = await removeWhiteBackground(avatar);
+        }
         return { ...agent, img: avatar || agent.img };
       }));
       setAgents(newAgents);
@@ -567,8 +645,21 @@ export default function Panel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newAgents.map(a => ({ id: a.id, name: a.name, img: a.img })))
       });
+
+      setMessages(prev => [...prev, {
+        id: 'avatar-gen-success-' + Date.now(),
+        sender: 'System',
+        text: '<b>AI Avatars Generated Successfully.</b><br>All agent profiles have been updated with unique AI-generated portraits.',
+        type: 'system-msg'
+      }]);
     } catch (e) {
       console.error("Failed to regenerate avatars:", e);
+      setMessages(prev => [...prev, {
+        id: 'avatar-gen-error-' + Date.now(),
+        sender: 'System',
+        text: '<b>Avatar Generation Failed.</b><br>There was an error generating AI portraits. Please check your API key or try again later.',
+        type: 'system-msg'
+      }]);
     } finally {
       setIsGeneratingAvatars(false);
     }
@@ -611,11 +702,24 @@ export default function Panel() {
     }]);
   };
 
-  const playTTS = async (text: string, voiceName: string = 'Kore') => {
-    const url = await generateTTS(text, voiceName);
-    if (url) {
-      const audio = new Audio(url);
-      audio.play();
+  const playTTS = async (text: string, voiceName: string = 'Kore', pitch: number = 1.0) => {
+    try {
+      const url = await generateTTS(text, voiceName, pitch);
+      if (url) {
+        const audio = new Audio();
+        audio.src = url;
+        audio.muted = isMuted;
+        audio.onerror = (e) => {
+          console.error("Manual playTTS Error Details:", {
+            error: audio.error,
+            src: audio.src,
+            text: text.substring(0, 50)
+          });
+        };
+        await audio.play();
+      }
+    } catch (e) {
+      console.error("playTTS Error:", e);
     }
   };
 
@@ -628,9 +732,17 @@ export default function Panel() {
           <button className="btn-icon" onClick={() => setIsSidebarOpen(!isSidebarOpen)} title="Toggle Sidebar">
             {isSidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
           </button>
-          <div className="logo"><Hexagon /><span>STRATEGY NEXUS</span></div>
+          <div className="logo"><Hexagon /><span>Eburon Hub</span></div>
         </div>
         <div className="header-actions">
+          <button 
+            className={`btn-icon ${isGeneratingAvatars ? 'animate-spin text-blue-400' : ''}`} 
+            onClick={regenerateAvatars} 
+            disabled={isGeneratingAvatars}
+            title="Generate AI Avatars for all Agents (Nano Banana)"
+          >
+            {isGeneratingAvatars ? <Loader2 size={18} /> : <ImageIcon size={18} />}
+          </button>
           <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
             {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
           </button>
@@ -663,7 +775,7 @@ export default function Panel() {
                     <button 
                       onClick={() => {
                         const agent = agents.find(a => a.name === msg.sender);
-                        playTTS(msg.text, agent?.voice || 'Kore');
+                        playTTS(msg.text, agent?.voice || 'Kore', agent?.pitch || 1.0);
                       }} 
                       className="text-gray-400 hover:text-white transition-colors ml-auto"
                       title="Read Aloud"
@@ -1026,6 +1138,17 @@ export default function Panel() {
                   <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
                     {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                   </button>
+                  <button 
+                    className="btn-icon" 
+                    onClick={() => {
+                      if (window.confirm("Reset all agents to default? This will clear custom names and roles.")) {
+                        setAgents(defaultAgents);
+                      }
+                    }} 
+                    title="Reset to Default Agents"
+                  >
+                    <Trash2 size={18} />
+                  </button>
                   <button onClick={() => setShowSettings(false)} className="btn-icon"><X /></button>
                 </div>
               </div>
@@ -1101,6 +1224,18 @@ export default function Panel() {
                   </div>
 
                   <div className="form-group">
+                    <label>Gender</label>
+                    <select className="custom-input" value={agents[activeEditIndex].gender || 'male'} onChange={(e) => {
+                      const newAgents = [...agents];
+                      newAgents[activeEditIndex].gender = e.target.value;
+                      setAgents(newAgents);
+                    }}>
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
                     <label>Model Provider</label>
                     <select className="custom-input" value={agents[activeEditIndex].provider || 'Cloud (Gemini)'} onChange={(e) => {
                       const newAgents = [...agents];
@@ -1133,8 +1268,32 @@ export default function Panel() {
                       <option value="Kore">Kore</option>
                       <option value="Fenrir">Fenrir</option>
                       <option value="Zephyr">Zephyr</option>
-                      <option value="Aoide">Aoide</option>
                     </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="flex justify-between">
+                      Pitch Variation
+                      <span className="text-blue-400 font-mono text-[10px]">{agents[activeEditIndex].pitch?.toFixed(2) || '1.00'}</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="0.5" 
+                      max="1.5" 
+                      step="0.05"
+                      className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500 mt-2"
+                      value={agents[activeEditIndex].pitch || 1.0} 
+                      onChange={(e) => {
+                        const newAgents = [...agents];
+                        newAgents[activeEditIndex].pitch = parseFloat(e.target.value);
+                        setAgents(newAgents);
+                      }} 
+                    />
+                    <div className="flex justify-between text-[8px] uppercase tracking-widest text-white/20 mt-1">
+                      <span>Deep</span>
+                      <span>Natural</span>
+                      <span>High</span>
+                    </div>
                   </div>
 
                   <div className="form-group">
@@ -1148,7 +1307,40 @@ export default function Panel() {
                   </div>
 
                   <div className="form-group full">
-                    <label>Agent Avatar</label>
+                    <div className="flex justify-between items-center mb-2">
+                      <label>Agent Avatar</label>
+                      <button 
+                        className={`btn-icon ${isGeneratingAvatars ? 'animate-spin opacity-50' : ''}`} 
+                        onClick={async () => {
+                          if (isGeneratingAvatars) return;
+                          setIsGeneratingAvatars(true);
+                          try {
+                            let avatar = await generateAgentAvatar(`${agents[activeEditIndex].gender || 'person'} ${agents[activeEditIndex].role} named ${agents[activeEditIndex].name}`, { background: avatarBgStyle });
+                            if (avatar) {
+                              if (avatarBgStyle === 'white') {
+                                avatar = await removeWhiteBackground(avatar);
+                              }
+                              const newAgents = [...agents];
+                              newAgents[activeEditIndex].img = avatar;
+                              setAgents(newAgents);
+                              
+                              // Save to server
+                              await fetch('/api/avatars', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(newAgents.map(a => ({ id: a.id, name: a.name, img: a.img })))
+                              });
+                            }
+                          } finally {
+                            setIsGeneratingAvatars(false);
+                          }
+                        }}
+                        disabled={isGeneratingAvatars}
+                        title="Regenerate Individual Avatar"
+                      >
+                        {isGeneratingAvatars ? <Loader2 size={18} /> : <ImageIcon size={18} />}
+                      </button>
+                    </div>
                     <div className="file-upload-zone" onClick={() => document.getElementById('avatar-upload')?.click()}>
                       <ImageIcon size={24} style={{ margin: '0 auto 10px auto', color: 'var(--text-muted)' }} />
                       <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Click to upload new avatar</p>
