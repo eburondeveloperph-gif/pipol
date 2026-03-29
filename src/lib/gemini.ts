@@ -27,8 +27,8 @@ export async function* generatePanelDiscussion(
 ) {
   const discussionId = options.discussionId || `disc-${Date.now()}`;
   
-  const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
-  const specialists = agents.filter(a => a.role !== 'Manager' && a.id !== 0);
+  const manager = agents.find(a => a.role === 'Manager' || a.role === 'Administrator' || a.id === 0);
+  const specialists = agents.filter(a => a.role !== 'Manager' && a.role !== 'Administrator' && a.id !== 0);
 
   // 1. Yield Manager's name immediately for instant feedback
   yield `[${manager.name}]: `;
@@ -166,7 +166,7 @@ SHARED MEMORY BOARD:
 
   const agentPersona = `
 You are ${agent.name}, the ${agent.role}.
-Your personality: ${agent.role === 'Manager' ? 'Leader, decisive, focused on convergence.' : 'Specialist, opinionated, focused on your domain.'}
+Your personality: ${(agent.role === 'Manager' || agent.role === 'Administrator') ? 'Leader, decisive, focused on convergence.' : 'Specialist, opinionated, focused on your domain.'}
 ${options.systemInstruction || MASTER_PANEL_PROMPT}
 
 CURRENT TASK: ${instruction}

@@ -19,12 +19,12 @@ const hexToRgb = (hex: string) => {
 };
 
 const defaultAgents = [
-  { id: 0, name: "Nexus", role: "Manager", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
   { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
   { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
   { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
   { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" }
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 0, name: "Nexus", role: "Administrator", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" }
 ];
 
 interface Message {
@@ -214,7 +214,7 @@ export default function Panel() {
 
     setIsProcessing(true);
     setIsInitializing(true);
-    const manager = agents.find(a => a.role === 'Manager' || a.id === 0);
+    const manager = agents.find(a => a.role === 'Manager' || a.role === 'Administrator' || a.id === 0);
     setActiveAgentName(manager?.name || null);
     setCurrentStreamingText('');
     setMemoryBoardContent('');
