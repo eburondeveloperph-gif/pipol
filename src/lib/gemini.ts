@@ -427,16 +427,28 @@ Participants in this room: ${allAgents.map(a => a.name).join(', ')}.
   history.push({ role: agent.name, content: fullResponse });
 }
 
+let lastTTSRequestTime = 0;
+const MIN_TTS_INTERVAL = 6500; // ~9.2 RPM to stay safe under 10 RPM limit
+
 export async function generateTTS(text: string, voiceName: string = 'Kore', pitch: number = 1.0, retryCount = 0): Promise<string | null> {
   if (!text || text.trim().length === 0) return null;
 
-  // 1. Strip Markdown and common special characters that might confuse TTS
+  // Global throttle to respect 10 RPM limit
+  const now = Date.now();
+  const timeSinceLast = now - lastTTSRequestTime;
+  if (timeSinceLast < MIN_TTS_INTERVAL) {
+    const waitTime = MIN_TTS_INTERVAL - timeSinceLast;
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+  lastTTSRequestTime = Date.now();
+
+  // 1. Strip Markdown and common special characters
   let cleanText = text
-    .replace(/[*_#`~>]/g, '') // Strip markdown symbols
-    .replace(/\[.*?\]/g, '')  // Strip bracketed text (like [pauses]) for now to see if it helps stability
-    .replace(/\s+/g, ' ')     // Normalize whitespace
+    .replace(/[*_#`~>]/g, '') 
+    .replace(/\[.*?\]/g, '')  
+    .replace(/\s+/g, ' ')     
     .trim()
-    .slice(0, 800);           // Slightly shorter truncation for safety
+    .slice(0, 1000);           
 
   if (cleanText.length === 0) return null;
 
@@ -453,7 +465,6 @@ export async function generateTTS(text: string, voiceName: string = 'Kore', pitc
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: `Speak this ${pitchInstruction}: ${cleanText}` }] }],
       config: {
-        // Removing systemInstruction as it might be causing instability in the preview model
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
@@ -506,11 +517,35 @@ export async function generateTTS(text: string, voiceName: string = 'Kore', pitc
   } catch (error: any) {
     console.error(`TTS Error (Attempt ${retryCount + 1}):`, error);
     
-    // Retry up to 2 times with exponential backoff
-    if (retryCount < 2) {
-      const delay = Math.pow(2, retryCount) * 1000;
-      console.log(`Retrying TTS in ${delay}ms...`);
-      await new Promise(r => setTimeout(r, delay));
+    // Handle 429 Quota Exceeded specifically
+    let retryDelay = Math.pow(2, retryCount) * 2000;
+    
+    try {
+      // Try to parse error message if it's JSON (common in this environment)
+      const errorBody = typeof error.message === 'string' ? JSON.parse(error.message) : error;
+      if (errorBody?.error?.code === 429 || errorBody?.code === 429) {
+        // Extract retryDelay from details if available (e.g., "41s")
+        const details = errorBody?.error?.details || errorBody?.details || [];
+        const retryInfo = details.find((d: any) => d['@type']?.includes('RetryInfo'));
+        if (retryInfo?.retryDelay) {
+          const seconds = parseInt(retryInfo.retryDelay);
+          if (!isNaN(seconds)) {
+            retryDelay = (seconds + 2) * 1000; // Add 2s buffer
+            console.log(`Quota exceeded. Waiting for recommended ${retryDelay}ms...`);
+          }
+        } else {
+          // Default long wait for 429 if no specific delay provided
+          retryDelay = 30000; 
+          console.log(`Quota exceeded. Waiting 30s...`);
+        }
+      }
+    } catch (e) {
+      // Not JSON or parsing failed, use default backoff
+    }
+
+    // Retry up to 3 times
+    if (retryCount < 3) {
+      await new Promise(r => setTimeout(r, retryDelay));
       return generateTTS(text, voiceName, pitch, retryCount + 1);
     }
     

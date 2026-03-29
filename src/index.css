@@ -47,13 +47,21 @@
 
 body, html {
     font-family: 'Inter', sans-serif;
-    background: var(--bg-base);
+    background: linear-gradient(180deg, #050505 0%, #121212 100%);
     color: var(--text-main);
     height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     transition: background 0.5s ease, color 0.5s ease;
+}
+
+#app-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    height: 100%;
+    width: 100%;
 }
 
 /* Soft Scrollbars */
@@ -64,16 +72,15 @@ body, html {
 
 /* --- Header --- */
 header {
-    background: var(--bg-panel);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    padding: 15px 30px; 
+    background: rgba(5, 5, 5, 0.4);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    padding: 12px 24px; 
     display: flex; 
     justify-content: space-between; 
     align-items: center;
-    border-bottom: 1px solid var(--border-color); 
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03); 
     z-index: 100;
-    box-shadow: var(--shadow-soft);
 }
 
 .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.2rem; letter-spacing: 0.5px; }
@@ -105,8 +112,16 @@ header {
     flex-direction: row;
     flex: 1;
     overflow: hidden;
-    padding: 20px;
-    gap: 20px;
+    padding: 0;
+    gap: 0;
+}
+
+#right-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: transparent;
 }
 
 /* --- Left Sidebar (Chat & Controls) --- */
@@ -115,35 +130,32 @@ header {
     height: 100%;
     flex-shrink: 0;
     display: flex; flex-direction: column;
-    background: var(--bg-chat);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid var(--border-color);
-    border-radius: 24px;
+    background: linear-gradient(180deg, #050505 0%, #121212 100%);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
     overflow: hidden;
-    transition: margin-left 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease, transform 0.4s ease;
-    box-shadow: var(--shadow-soft);
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 20px 0 50px rgba(0,0,0,0.3);
+    z-index: 50;
 }
 
 #left-sidebar.collapsed {
-    margin-left: -440px; /* 420px + 20px gap */
+    width: 0;
     opacity: 0;
-    transform: scale(0.95);
+    transform: translateX(-100%);
     pointer-events: none;
 }
 
 #chat-window {
-    flex: 1; padding: 30px; overflow-y: auto; display: flex; flex-direction: column; gap: 24px;
+    flex: 1; padding: 40px 30px; overflow-y: auto; display: flex; flex-direction: column; gap: 32px;
     scroll-behavior: smooth;
 }
 
 /* Message Styling */
 .system-msg {
-    align-self: center; font-size: 0.85rem; color: var(--text-muted); background: var(--system-msg-bg); 
-    padding: 16px 24px; border-radius: 24px; border: 1px solid var(--border-color); text-align: center; max-width: 90%;
+    align-self: center; font-size: 0.8rem; color: rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.02); 
+    padding: 12px 20px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.05); text-align: center; max-width: 90%;
     line-height: 1.6;
     backdrop-filter: blur(8px);
-    box-shadow: var(--shadow-soft);
 }
 
 .message { 
@@ -156,9 +168,10 @@ header {
 
 .agent-message { 
     align-self: flex-start; 
-    background: var(--chat-agent); 
-    border: 1px solid var(--border-color); 
-    border-radius: 24px 24px 24px 8px; 
+    background: rgba(255, 255, 255, 0.03); 
+    border: 1px solid rgba(255, 255, 255, 0.05); 
+    border-radius: 20px 20px 20px 4px; 
+    color: rgba(255, 255, 255, 0.9);
 }
 .agent-msg-name { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
 
@@ -172,9 +185,10 @@ header {
 
 /* Controls Area */
 #controls-wrapper {
-    padding: 20px 24px; 
-    border-top: 1px solid var(--border-color);
-    background: var(--bg-panel); 
+    padding: 24px; 
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(20px);
     display: flex; gap: 12px; align-items: center;
     flex-shrink: 0;
     position: sticky;
@@ -183,11 +197,10 @@ header {
 }
 
 .mic-btn { 
-    width: 48px; height: 48px; border-radius: 50%; 
-    background: var(--bg-input); border: 1px solid var(--border-color); 
+    width: 44px; height: 44px; border-radius: 12px; 
+    background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); 
     color: var(--text-muted); cursor: pointer; display: flex; justify-content: center; align-items: center; 
     transition: all 0.3s ease; flex-shrink: 0; 
-    box-shadow: var(--shadow-soft);
 }
 .mic-btn:hover { background: var(--border-color); color: var(--text-main); transform: scale(1.05); }
 .mic-btn.recording { background: var(--danger); color: white; border-color: transparent; animation: pulse 1.5s infinite; }
@@ -196,27 +209,26 @@ header {
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(251, 113, 133, 0.6); } 70% { box-shadow: 0 0 0 15px rgba(251, 113, 133, 0); } 100% { box-shadow: 0 0 0 0 rgba(251, 113, 133, 0); } }
 
 .input-group {
-    flex: 1; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 24px; 
-    padding: 6px 16px; display: flex; align-items: center; transition: all 0.3s ease;
-    box-shadow: var(--shadow-inner);
+    flex: 1; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; 
+    padding: 4px 16px; display: flex; align-items: center; transition: all 0.3s ease;
 }
-.input-group:focus-within { border-color: var(--accent-blue); box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2); }
+.input-group:focus-within { border-color: var(--accent-blue); background: rgba(255, 255, 255, 0.05); }
 input[type="text"] { width: 100%; background: transparent; border: none; outline: none; color: var(--text-main); padding: 12px 5px; font-size: 0.95rem; }
 input::placeholder { color: var(--text-muted); }
 
 .send-btn { 
-    width: 48px; height: 48px; border-radius: 50%; 
+    width: 44px; height: 44px; border-radius: 12px; 
     background: var(--accent-blue); color: white; border: none; 
     cursor: pointer; display: flex; justify-content: center; align-items: center; 
     transition: all 0.3s ease; flex-shrink: 0; 
-    box-shadow: 0 4px 15px rgba(96, 165, 250, 0.4);
 }
 .send-btn:hover { transform: scale(1.05) translateY(-2px); box-shadow: 0 6px 20px rgba(96, 165, 250, 0.6); }
 
 .interrupt-btn { 
-    background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger); 
-    height: 48px; padding: 0 24px; border-radius: 24px; font-weight: 600; font-size: 0.85rem; 
+    background: rgba(251, 113, 133, 0.05); border: 1px solid rgba(251, 113, 133, 0.2); color: var(--danger); 
+    height: 44px; padding: 0 20px; border-radius: 12px; font-weight: 600; font-size: 0.75rem; 
     display: flex; align-items: center; justify-content: center; gap: 8px; cursor: not-allowed; opacity: 0.5; transition: all 0.3s ease; flex-shrink: 0; 
+    text-transform: uppercase; letter-spacing: 1px;
 }
 .interrupt-btn.enabled { cursor: pointer; opacity: 1; }
 .interrupt-btn.enabled:hover { background: var(--danger); color: white; transform: translateY(-2px); box-shadow: 0 4px 15px rgba(251, 113, 133, 0.4); }
@@ -224,25 +236,24 @@ input::placeholder { color: var(--text-muted); }
 /* --- Right Area (Agent Grid) --- */
 #agent-grid {
     flex: 1;
-    padding: 10px; 
+    padding: 40px; 
     overflow-y: auto; 
     background: transparent;
     display: grid; 
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); 
-    gap: 24px; 
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
+    gap: 40px; 
     align-content: flex-start;
     scroll-behavior: smooth;
 }
 
 .agent-card {
-    background: var(--card-bg);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    background: rgba(255, 255, 255, 0.02);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
     border-radius: 24px; 
-    border: 1px solid var(--border-color);
+    border: 1px solid rgba(255, 255, 255, 0.05);
     position: relative; overflow: hidden; display: flex; flex-direction: column;
     transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: var(--shadow-soft);
 }
 
 .agent-card:hover {

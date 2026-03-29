@@ -121,6 +121,7 @@ export default function Panel() {
   const inputRef = useRef('');
   const initialInputRef = useRef('');
   const audioQueueRef = useRef<{ text: string, voice: string, pitch: number, agentName: string, forceStart?: boolean }[]>([]);
+  const readyAudioQueueRef = useRef<{ url: string, agentName: string, forceStart?: boolean }[]>([]);
   const audioCountRef = useRef(0);
   const isPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -195,12 +196,12 @@ export default function Panel() {
   }, [input]);
 
   const processAudioQueue = async () => {
-    if (audioQueueRef.current.length === 0 || isBufferingAudio) return;
+    if (readyAudioQueueRef.current.length === 0 || isBufferingAudio) return;
     
     // If something is playing and the next item isn't a force start, wait.
-    if (isPlayingRef.current && !audioQueueRef.current[0].forceStart) return;
+    if (isPlayingRef.current && !readyAudioQueueRef.current[0].forceStart) return;
     
-    const item = audioQueueRef.current.shift();
+    const item = readyAudioQueueRef.current.shift();
     if (!item) return;
 
     if (item.forceStart) {
@@ -215,63 +216,54 @@ export default function Panel() {
     await playAudioInstance(item, false);
   };
 
-  const playAudioInstance = async (item: { text: string, voice: string, pitch: number, agentName: string }, isConcurrent: boolean) => {
+  const playAudioInstance = async (item: { url: string, agentName: string }, isConcurrent: boolean) => {
     if (!isConcurrent) setPlayingAgentName(item.agentName);
     
     try {
-      const url = await generateTTS(item.text, item.voice, item.pitch);
-      if (url) {
-        const audio = new Audio();
-        audio.src = url;
-        audio.muted = isMuted;
-        
-        if (!isConcurrent) currentAudioRef.current = audio;
+      const audio = new Audio();
+      audio.src = item.url;
+      audio.muted = isMuted;
+      
+      if (!isConcurrent) currentAudioRef.current = audio;
 
-        const cleanup = () => {
-          if (!isConcurrent) {
-            setPlayingAgentName(null);
-            isPlayingRef.current = false;
-            currentAudioRef.current = null;
-          }
-        };
-
-        audio.onended = () => {
-          cleanup();
-          if (!isConcurrent) {
-            if (audioQueueRef.current.length === 0 && isHandsFree) {
-              setTimeout(() => toggleMic(), 500);
-            } else {
-              processAudioQueue();
-            }
-          }
-        };
-
-        audio.onerror = (e) => {
-          console.error("Audio Playback Error Details:", {
-            error: audio.error,
-            src: audio.src,
-            item
-          });
-          cleanup();
-          if (!isConcurrent) {
-            if (audioQueueRef.current.length === 0 && isHandsFree) {
-              setTimeout(() => toggleMic(), 500);
-            } else {
-              processAudioQueue();
-            }
-          }
-        };
-
-        await audio.play();
-      } else {
+      const cleanup = () => {
         if (!isConcurrent) {
           setPlayingAgentName(null);
           isPlayingRef.current = false;
-          processAudioQueue();
+          currentAudioRef.current = null;
         }
-      }
+      };
+
+      audio.onended = () => {
+        cleanup();
+        if (!isConcurrent) {
+          if (readyAudioQueueRef.current.length === 0 && isHandsFree) {
+            setTimeout(() => toggleMic(), 500);
+          } else {
+            processAudioQueue();
+          }
+        }
+      };
+
+      audio.onerror = (e) => {
+        console.error("Audio Playback Error Details:", {
+          error: audio.error,
+          src: audio.src,
+          item
+        });
+        cleanup();
+        if (!isConcurrent) {
+          if (readyAudioQueueRef.current.length === 0 && isHandsFree) {
+            setTimeout(() => toggleMic(), 500);
+          } else {
+            processAudioQueue();
+          }
+        }
+      };
+
+      await audio.play();
     } catch (e) {
-      console.error("TTS Processing Error:", e);
+      console.error("Audio Instance Playback Error:", e);
       if (!isConcurrent) {
         setPlayingAgentName(null);
         isPlayingRef.current = false;
@@ -280,15 +272,22 @@ export default function Panel() {
     }
   };
 
-  const enqueueAudio = (text: string, voice: string, pitch: number, agentName: string, forceStart: boolean = false) => {
-    audioQueueRef.current.push({ text, voice, pitch, agentName, forceStart });
-    audioCountRef.current++;
-    
-    if (isBufferingAudio && audioCountRef.current >= 5) {
-      setIsBufferingAudio(false);
-      // The useEffect for isBufferingAudio will trigger processAudioQueue
-    } else {
-      processAudioQueue();
+  const enqueueAudio = async (text: string, voice: string, pitch: number, agentName: string, forceStart: boolean = false) => {
+    // Start fetching immediately
+    try {
+      const url = await generateTTS(text, voice, pitch);
+      if (url) {
+        readyAudioQueueRef.current.push({ url, agentName, forceStart });
+        audioCountRef.current++;
+        
+        if (isBufferingAudio && audioCountRef.current >= 5) {
+          setIsBufferingAudio(false);
+        } else {
+          processAudioQueue();
+        }
+      }
+    } catch (e) {
+      console.error("Failed to pre-fetch TTS:", e);
     }
   };
 
@@ -525,21 +524,9 @@ export default function Panel() {
           }
         }
 
-        // Parallel TTS: Extract sentences from the current speaker's text
+        // Parallel TTS: Buffer sentences and combine them to save on quota (10 RPM limit)
         if (!isFinalPlanMode && currentSpeaker) {
           sentenceBuffer += chunk;
-          const parts = sentenceBuffer.split(sentenceEndRegex);
-          if (parts.length > 1) {
-            // The last part is the remaining incomplete sentence
-            sentenceBuffer = parts.pop() || "";
-            // The rest are complete sentences
-            for (const sentence of parts) {
-              if (sentence.trim().length > 5) {
-                const agent = agents.find(a => a.name === currentSpeaker);
-                if (agent) enqueueAudio(sentence.trim(), agent.voice, agent.pitch || 1.0, agent.name);
-              }
-            }
-          }
         }
 
         let lines = buffer.split('\n');
@@ -588,12 +575,12 @@ export default function Panel() {
             }
 
             if (currentSpeaker && currentMessageText) {
-              // Enqueue leftover sentence buffer before switching speakers
-              if (sentenceBuffer.trim().length > 0) {
-                const agent = agents.find(a => a.name === currentSpeaker);
-                if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name);
-                sentenceBuffer = "";
+              // Fetch audio for the ENTIRE previous speaker's turn at once to stay under 10 RPM limit
+              const agent = agents.find(a => a.name === currentSpeaker);
+              if (agent && currentMessageText.trim().length > 5) {
+                enqueueAudio(currentMessageText.trim(), agent.voice, agent.pitch || 1.0, agent.name, isOverlap);
               }
+              sentenceBuffer = "";
               commitMessage(currentSpeaker, currentMessageText, true);
             }
             currentSpeaker = match[1].trim();
@@ -606,15 +593,7 @@ export default function Panel() {
               setCurrentStreamingText(match[2] + '\n');
             }
             
-            // Handle cross-talk audio start
-            if (sentenceBuffer.trim().length > 5) {
-              const agent = agents.find(a => a.name === currentSpeaker);
-              // For interjection, we don't need forceStart because we cleared the queue and isPlayingRef above
-              // For overlap, we use forceStart to play concurrently with the previous speaker's tail
-              if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name, isOverlap);
-              sentenceBuffer = ""; 
-            }
-
+            // Handle cross-talk audio start (Wait for full turn to minimize requests)
             setPendingTransition('standard'); // Reset transition
             setIsInitializing(false);
           } else if (currentSpeaker) {
@@ -641,20 +620,16 @@ export default function Panel() {
           }
         } else if (currentSpeaker) {
           currentMessageText += buffer;
-          // Enqueue leftover sentence buffer
-          if (sentenceBuffer.trim().length > 0) {
-            const agent = agents.find(a => a.name === currentSpeaker);
-            if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name);
-            sentenceBuffer = "";
+          const agent = agents.find(a => a.name === currentSpeaker);
+          if (agent && currentMessageText.trim().length > 5) {
+            enqueueAudio(currentMessageText.trim(), agent.voice, agent.pitch || 1.0, agent.name);
           }
           commitMessage(currentSpeaker, currentMessageText, true);
         }
       } else if (currentSpeaker && currentMessageText) {
-         // Enqueue leftover sentence buffer
-         if (sentenceBuffer.trim().length > 0) {
-           const agent = agents.find(a => a.name === currentSpeaker);
-           if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name);
-           sentenceBuffer = "";
+         const agent = agents.find(a => a.name === currentSpeaker);
+         if (agent && currentMessageText.trim().length > 5) {
+           enqueueAudio(currentMessageText.trim(), agent.voice, agent.pitch || 1.0, agent.name);
          }
          commitMessage(currentSpeaker, currentMessageText, true);
       }
