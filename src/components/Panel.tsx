@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { generatePanelDiscussion, generateTTS } from '../lib/gemini';
+import { generatePanelDiscussion, generateTTS, generateAgentAvatar, type MemoryBoard } from '../lib/gemini';
 import { MASTER_PANEL_PROMPT } from '../lib/prompts';
-import { Hexagon, SlidersHorizontal, Mic, Send, AudioLines, X, UserPlus, Trash2, Image as ImageIcon, Cpu, User, Star, Volume2, VolumeX, Moon, Sun, PanelLeftClose, PanelLeftOpen, Loader2 } from 'lucide-react';
+import { Hexagon, SlidersHorizontal, Mic, Send, AudioLines, X, UserPlus, Trash2, Image as ImageIcon, Cpu, User, Star, Volume2, VolumeX, Moon, Sun, PanelLeftClose, PanelLeftOpen, Loader2, Hand, Plus, Edit2, Check, Trash } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { io, Socket } from 'socket.io-client';
 
 const dummyImages = [
   "https://freepngimg.com/thumb/man/22654-6-man-thumb.png",       // Suit Man
@@ -23,8 +24,8 @@ const defaultAgents = [
   { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
   { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
   { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 0, name: "Nexus", role: "Administrator", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" }
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
+  { id: 0, name: "Nexus", role: "Administrator", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Aoide", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" }
 ];
 
 interface Message {
@@ -58,13 +59,25 @@ export default function Panel() {
   const [currentStreamingText, setCurrentStreamingText] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showMemoryBoard, setShowMemoryBoard] = useState(false);
-  const [memoryBoardContent, setMemoryBoardContent] = useState('');
+  const [memoryBoard, setMemoryBoard] = useState<MemoryBoard>({
+    facts: [],
+    assumptions: [],
+    conflicts: [],
+    decisions: [],
+    openQuestions: []
+  });
+  const [discussionId, setDiscussionId] = useState<string>(`disc-${Date.now()}`);
+  const [editingMemory, setEditingMemory] = useState<{ category: keyof MemoryBoard, index: number, value: string } | null>(null);
+  const [newMemoryItem, setNewMemoryItem] = useState<{ category: keyof MemoryBoard, value: string } | null>(null);
   const [activeEditIndex, setActiveEditIndex] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [isHandsFree, setIsHandsFree] = useState(false);
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModel, setOllamaModel] = useState('gemma');
   const [playingAgentName, setPlayingAgentName] = useState<string | null>(null);
+  const [handRaisers, setHandRaisers] = useState<number[]>([]);
+  const [isGeneratingAvatars, setIsGeneratingAvatars] = useState(false);
+  const [avatarBgStyle, setAvatarBgStyle] = useState<'white' | 'studio' | 'office'>('white');
   
   const chatWindowRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -74,6 +87,28 @@ export default function Panel() {
   const audioQueueRef = useRef<{ text: string, voice: string, agentName: string }[]>([]);
   const isPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+
+  useEffect(() => {
+    socketRef.current = io();
+    
+    socketRef.current.on('connect', () => {
+      socketRef.current?.emit('join_discussion', discussionId);
+    });
+
+    socketRef.current.on('memory_update', (updatedMemory: MemoryBoard) => {
+      setMemoryBoard(updatedMemory);
+    });
+
+    return () => {
+      socketRef.current?.disconnect();
+    };
+  }, [discussionId]);
+
+  const syncMemoryUpdate = (updatedMemory: MemoryBoard) => {
+    setMemoryBoard(updatedMemory);
+    socketRef.current?.emit('update_memory', { discussionId, memory: updatedMemory });
+  };
 
   useEffect(() => {
     if (currentAudioRef.current) {
@@ -139,6 +174,50 @@ export default function Panel() {
   const enqueueAudio = (text: string, voice: string, agentName: string) => {
     audioQueueRef.current.push({ text, voice, agentName });
     processAudioQueue();
+  };
+
+  const handleAgentTTS = async (agent: any) => {
+    // If something is already playing, stop it
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    
+    const text = `Hello, I am ${agent.name}, your ${agent.role}.`;
+    setPlayingAgentName(agent.name);
+    isPlayingRef.current = true;
+
+    try {
+      const url = await generateTTS(text, agent.voice);
+      if (url) {
+        const audio = new Audio(url);
+        audio.muted = isMuted;
+        currentAudioRef.current = audio;
+        audio.onended = () => {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          currentAudioRef.current = null;
+          // Resume queue if any
+          processAudioQueue();
+        };
+        audio.onerror = () => {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          currentAudioRef.current = null;
+          processAudioQueue();
+        };
+        await audio.play();
+      } else {
+        setPlayingAgentName(null);
+        isPlayingRef.current = false;
+        processAudioQueue();
+      }
+    } catch (e) {
+      console.error("Manual TTS Error:", e);
+      setPlayingAgentName(null);
+      isPlayingRef.current = false;
+      processAudioQueue();
+    }
   };
 
   useEffect(() => {
@@ -217,7 +296,20 @@ export default function Panel() {
     const manager = agents.find(a => a.role === 'Manager' || a.role === 'Administrator' || a.id === 0);
     setActiveAgentName(manager?.name || null);
     setCurrentStreamingText('');
-    setMemoryBoardContent('');
+    
+    // Reset memory board for new discussion if it's the first message
+    if (messages.length <= 1) {
+      const newId = `disc-${Date.now()}`;
+      setDiscussionId(newId);
+      socketRef.current?.emit('join_discussion', newId);
+      setMemoryBoard({
+        facts: [`Project Topic: ${userMsg}`],
+        assumptions: [],
+        conflicts: [],
+        decisions: [],
+        openQuestions: []
+      });
+    }
 
     audioQueueRef.current = [];
     if (currentAudioRef.current) {
@@ -249,27 +341,26 @@ export default function Panel() {
         if (chunk.startsWith('MEMORY_UPDATE:')) {
           try {
             const memoryData = JSON.parse(chunk.replace('MEMORY_UPDATE:', ''));
-            const formattedMemory = `
-### FACTS
-${memoryData.facts.map((f: string) => `- ${f}`).join('\n')}
-
-### ASSUMPTIONS
-${memoryData.assumptions.map((a: string) => `- ${a}`).join('\n')}
-
-### CONFLICTS
-${memoryData.conflicts.map((c: string) => `- ${c}`).join('\n')}
-
-### DECISIONS
-${memoryData.decisions.map((d: string) => `- ${d}`).join('\n')}
-
-### OPEN QUESTIONS
-${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
-            `;
-            setMemoryBoardContent(formattedMemory);
+            setMemoryBoard(memoryData);
             continue;
           } catch (e) {
             console.error("Failed to parse memory update:", e);
           }
+        }
+
+        // Handle Hand Raising
+        if (chunk.startsWith('HANDS_RAISED:')) {
+          try {
+            const ids = JSON.parse(chunk.replace('HANDS_RAISED:', ''));
+            setHandRaisers(ids);
+            continue;
+          } catch (e) {
+            console.error("Failed to parse hand raisers:", e);
+          }
+        }
+        if (chunk.startsWith('HANDS_LOWERED')) {
+          setHandRaisers([]);
+          continue;
         }
 
         buffer += chunk;
@@ -326,7 +417,8 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
             // Extract Memory Board
             const memoryBoardMatch = currentFinalPlan.match(/SECTION 6 — SHARED MEMORY BOARD\n([\s\S]*)/i);
             if (memoryBoardMatch) {
-              setMemoryBoardContent(memoryBoardMatch[1]);
+              // We don't overwrite the structured memory board from the text plan anymore
+              // as the structured board is the source of truth
               const planWithoutMemory = currentFinalPlan.replace(/SECTION 6 — SHARED MEMORY BOARD\n[\s\S]*/i, '');
               updateFinalPlanMessage(planWithoutMemory);
             } else {
@@ -367,7 +459,6 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
           currentFinalPlan += buffer;
           const memoryBoardMatch = currentFinalPlan.match(/SECTION 6 — SHARED MEMORY BOARD\n([\s\S]*)/i);
           if (memoryBoardMatch) {
-            setMemoryBoardContent(memoryBoardMatch[1]);
             const planWithoutMemory = currentFinalPlan.replace(/SECTION 6 — SHARED MEMORY BOARD\n[\s\S]*/i, '');
             updateFinalPlanMessage(planWithoutMemory);
           } else {
@@ -441,6 +532,21 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
     });
   };
 
+  const regenerateAvatars = async () => {
+    setIsGeneratingAvatars(true);
+    try {
+      const newAgents = await Promise.all(agents.map(async (agent) => {
+        const avatar = await generateAgentAvatar(`${agent.role} named ${agent.name}`, { background: avatarBgStyle });
+        return { ...agent, img: avatar || agent.img };
+      }));
+      setAgents(newAgents);
+    } catch (e) {
+      console.error("Failed to regenerate avatars:", e);
+    } finally {
+      setIsGeneratingAvatars(false);
+    }
+  };
+
   const handleInterrupt = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -505,7 +611,7 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
             {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
           </button>
           <button 
-            className={`btn-icon ${memoryBoardContent ? 'text-blue-400 border-blue-400' : ''}`} 
+            className={`btn-icon ${Object.values(memoryBoard).some(arr => arr.length > 0) ? 'text-blue-400 border-blue-400' : ''}`} 
             onClick={() => setShowMemoryBoard(!showMemoryBoard)} 
             title="Shared Memory Board"
           >
@@ -626,6 +732,11 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
               <AudioLines size={18} />
               <span>HALT</span>
             </button>
+
+            <button className={`interrupt-btn ${isGeneratingAvatars ? 'enabled' : ''}`} onClick={regenerateAvatars} title="Regenerate Realistic Avatars" disabled={isGeneratingAvatars}>
+              <ImageIcon size={18} />
+              <span>{isGeneratingAvatars ? 'GEN...' : 'AVATARS'}</span>
+            </button>
           </div>
         </div>
 
@@ -633,19 +744,37 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
           {agents.map((a, i) => {
             const isSpeaking = playingAgentName === a.name;
             const isTyping = activeAgentName === a.name;
+            const isRaisingHand = handRaisers.includes(a.id);
             const isActive = isSpeaking || isTyping;
             
             return (
               <div key={a.id} className={`agent-card ${isActive ? 'active' : ''}`} style={{ '--agent-color-rgb': a.rgba } as any}>
-                <div className="card-top">
+                <div className="card-top relative">
                   <img src={a.img} className="agent-img" alt={a.name} />
+                  {isRaisingHand && !isActive && (
+                    <div className="absolute -top-2 -right-2 bg-yellow-500 text-black p-1.5 rounded-full shadow-lg animate-bounce z-10 border-2 border-white dark:border-gray-800" title="Raising Hand">
+                      <Hand size={12} fill="currentColor" />
+                    </div>
+                  )}
                   <button className="star-btn" onClick={() => rewardAgent(i)} title="Reward Idea">
                     <Star size={16} fill="currentColor" />
                   </button>
                 </div>
                 <div className="card-bottom">
                   <div className="agent-name">
-                    {a.name}
+                    <div className="flex items-center gap-2">
+                      {a.name}
+                      <button 
+                        className={`p-1 rounded-full hover:bg-white/10 transition-colors ${isSpeaking ? 'text-blue-400' : 'text-white/40'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAgentTTS(a);
+                        }}
+                        title={`Hear ${a.name}'s introduction`}
+                      >
+                        <Volume2 size={12} />
+                      </button>
+                    </div>
                     <div className="visualizer" style={{ opacity: isSpeaking ? 1 : 0 }}>
                       <div className="bar"></div><div className="bar"></div><div className="bar"></div>
                     </div>
@@ -664,10 +793,11 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
 
       {showMemoryBoard && (
         <div id="settings-modal" style={{ display: 'flex', opacity: 1 }}>
-          <div className="modal-content" style={{ transform: 'scale(1)', flexDirection: 'column' }}>
+          <div className="modal-content" style={{ transform: 'scale(1)', flexDirection: 'column', maxWidth: '800px' }}>
             <div className="settings-header" style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', margin: 0 }}>
               <div>
                 <div className="flex items-center gap-3">
+                  <AudioLines className="text-blue-400" size={24} />
                   <h2>Shared Memory Board</h2>
                   {isProcessing && (
                     <span className="text-[10px] uppercase tracking-widest text-blue-400 flex items-center gap-1 bg-blue-400/10 px-2 py-0.5 rounded border border-blue-400/20">
@@ -675,25 +805,150 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
                     </span>
                   )}
                 </div>
-                <p>Facts, assumptions, conflicts, decisions, and open questions.</p>
+                <p>Collaborative space for facts, assumptions, conflicts, decisions, and open questions.</p>
               </div>
               <div className="flex items-center gap-2">
-                <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
-                  {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                </button>
                 <button onClick={() => setShowMemoryBoard(false)} className="btn-icon"><X /></button>
               </div>
             </div>
-            <div className="settings-body markdown-body">
-              {memoryBoardContent ? (
-                <ReactMarkdown>{memoryBoardContent}</ReactMarkdown>
-              ) : (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '40px' }}>
-                  <AudioLines size={48} style={{ margin: '0 auto 15px auto', opacity: 0.2 }} />
-                  <p>The memory board is empty.</p>
-                  <p style={{ fontSize: '0.85rem', marginTop: '10px' }}>It will be populated in real-time as the discussion progresses.</p>
-                </div>
-              )}
+            
+            <div className="settings-body overflow-y-auto p-6 md:p-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {(Object.keys(memoryBoard) as Array<keyof MemoryBoard>).map((category) => {
+                  const colors: Record<string, string> = {
+                    facts: 'blue',
+                    assumptions: 'amber',
+                    conflicts: 'red',
+                    decisions: 'green',
+                    openQuestions: 'purple'
+                  };
+                  const color = colors[category] || 'blue';
+                  
+                  return (
+                    <div key={category} className="flex flex-col gap-4">
+                      <div className="flex items-center justify-between group/header">
+                        <h3 className={`text-xs font-black uppercase tracking-[0.2em] flex items-center gap-2 ${color === 'blue' ? 'text-blue-400' : color === 'amber' ? 'text-amber-400' : color === 'red' ? 'text-red-400' : color === 'green' ? 'text-green-400' : 'text-purple-400'}`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${color === 'blue' ? 'bg-blue-500' : color === 'amber' ? 'bg-amber-500' : color === 'red' ? 'bg-red-500' : color === 'green' ? 'bg-green-500' : 'bg-purple-500'}`} />
+                          {category.replace(/([A-Z])/g, ' $1')}
+                        </h3>
+                        <button 
+                          onClick={() => setNewMemoryItem({ category, value: '' })}
+                          className={`p-1.5 rounded-lg transition-all opacity-0 group-hover/header:opacity-100 ${color === 'blue' ? 'hover:bg-blue-500/10 text-blue-400/40 hover:text-blue-400' : color === 'amber' ? 'hover:bg-amber-500/10 text-amber-400/40 hover:text-amber-400' : color === 'red' ? 'hover:bg-red-500/10 text-red-400/40 hover:text-red-400' : color === 'green' ? 'hover:bg-green-500/10 text-green-400/40 hover:text-green-400' : 'hover:bg-purple-500/10 text-purple-400/40 hover:text-purple-400'}`}
+                          title="Add Entry"
+                        >
+                          <Plus size={14} />
+                        </button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {memoryBoard[category].map((item, idx) => (
+                          <div 
+                            key={idx} 
+                            className="group relative flex flex-col gap-2 p-4 rounded-2xl bg-white/[0.03] border border-white/5 hover:border-white/10 hover:bg-white/[0.05] transition-all duration-300"
+                          >
+                            {editingMemory?.category === category && editingMemory?.index === idx ? (
+                              <div className="space-y-3">
+                                <textarea 
+                                  autoFocus
+                                  className="w-full bg-black/40 border border-blue-500/30 rounded-xl p-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 min-h-[100px] resize-none leading-relaxed"
+                                  value={editingMemory.value}
+                                  onChange={(e) => setEditingMemory({ ...editingMemory, value: e.target.value })}
+                                />
+                                <div className="flex justify-end gap-2">
+                                  <button 
+                                    onClick={() => setEditingMemory(null)}
+                                    className="px-3 py-1.5 text-xs font-semibold text-white/40 hover:text-white transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button 
+                                    onClick={() => {
+                                      const newBoard = { ...memoryBoard };
+                                      newBoard[category][idx] = editingMemory.value;
+                                      syncMemoryUpdate(newBoard);
+                                      setEditingMemory(null);
+                                    }}
+                                    className={`px-4 py-1.5 text-xs font-bold rounded-lg text-black hover:brightness-110 transition-all ${color === 'blue' ? 'bg-blue-500' : color === 'amber' ? 'bg-amber-500' : color === 'red' ? 'bg-red-500' : color === 'green' ? 'bg-green-500' : 'bg-purple-500'}`}
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <p className="text-sm text-white/70 leading-relaxed font-medium">{item}</p>
+                                <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-all duration-300 translate-y-1 group-hover:translate-y-0">
+                                  <button 
+                                    onClick={() => setEditingMemory({ category, index: idx, value: item })}
+                                    className="p-2 rounded-lg hover:bg-white/10 text-white/20 hover:text-blue-400 transition-colors"
+                                    title="Edit"
+                                  >
+                                    <Edit2 size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => {
+                                      const newBoard = { ...memoryBoard };
+                                      newBoard[category].splice(idx, 1);
+                                      syncMemoryUpdate(newBoard);
+                                    }}
+                                    className="p-2 rounded-lg hover:bg-red-500/10 text-white/20 hover:text-red-400 transition-colors"
+                                    title="Delete"
+                                  >
+                                    <Trash size={14} />
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ))}
+
+                        {newMemoryItem?.category === category && (
+                          <div className={`p-4 rounded-2xl border space-y-3 animate-in slide-in-from-top-2 duration-200 ${color === 'blue' ? 'bg-blue-500/5 border-blue-500/20' : color === 'amber' ? 'bg-amber-500/5 border-amber-500/20' : color === 'red' ? 'bg-red-500/5 border-red-500/20' : color === 'green' ? 'bg-green-500/5 border-green-500/20' : 'bg-purple-500/5 border-purple-500/20'}`}>
+                            <textarea 
+                              autoFocus
+                              placeholder={`Enter new ${category.toLowerCase()}...`}
+                              className="w-full bg-transparent border-none p-0 text-sm text-white focus:outline-none min-h-[80px] resize-none leading-relaxed placeholder:text-white/20"
+                              value={newMemoryItem.value}
+                              onChange={(e) => setNewMemoryItem({ ...newMemoryItem, value: e.target.value })}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button 
+                                onClick={() => setNewMemoryItem(null)}
+                                className="px-3 py-1.5 text-xs font-semibold text-white/40 hover:text-white transition-colors"
+                              >
+                                Cancel
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  if (newMemoryItem.value.trim()) {
+                                    const newBoard = { ...memoryBoard };
+                                    newBoard[category].push(newMemoryItem.value.trim());
+                                    syncMemoryUpdate(newBoard);
+                                  }
+                                  setNewMemoryItem(null);
+                                }}
+                                className={`px-4 py-1.5 text-xs font-bold rounded-lg text-black hover:brightness-110 transition-all ${color === 'blue' ? 'bg-blue-500' : color === 'amber' ? 'bg-amber-500' : color === 'red' ? 'bg-red-500' : color === 'green' ? 'bg-green-500' : 'bg-purple-500'}`}
+                              >
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {memoryBoard[category].length === 0 && !newMemoryItem && (
+                          <div 
+                            onClick={() => setNewMemoryItem({ category, value: '' })}
+                            className="group/empty py-10 border-2 border-dashed border-white/[0.03] rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-white/10 hover:bg-white/[0.01] transition-all"
+                          >
+                            <Plus size={20} className="text-white/10 group-hover/empty:text-white/40 transition-colors" />
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-white/10 group-hover/empty:text-white/40 transition-colors">Empty Section</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -738,6 +993,14 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button 
+                    className={`btn-icon ${isGeneratingAvatars ? 'animate-spin opacity-50' : ''}`} 
+                    onClick={regenerateAvatars}
+                    disabled={isGeneratingAvatars}
+                    title="Regenerate All Avatars"
+                  >
+                    {isGeneratingAvatars ? <Loader2 size={18} /> : <ImageIcon size={18} />}
+                  </button>
                   <button className="btn-icon" onClick={() => setIsMuted(!isMuted)} title={isMuted ? "Unmute" : "Mute"}>
                     {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                   </button>
@@ -780,6 +1043,19 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
                       placeholder="gemma"
                     />
                     <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>The model to use when an agent is set to Local (Ollama).</p>
+                  </div>
+                  <div className="form-group full">
+                    <label>AI Avatar Background Style</label>
+                    <select 
+                      className="custom-input" 
+                      value={avatarBgStyle} 
+                      onChange={(e) => setAvatarBgStyle(e.target.value as any)}
+                    >
+                      <option value="white">Isolated (White Background)</option>
+                      <option value="studio">Professional Studio</option>
+                      <option value="office">Modern Office</option>
+                    </select>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>Choose the environment for generated agent portraits.</p>
                   </div>
                 </div>
               ) : agents[activeEditIndex] && (
@@ -835,6 +1111,7 @@ ${memoryData.openQuestions.map((q: string) => `- ${q}`).join('\n')}
                       <option value="Kore">Kore</option>
                       <option value="Fenrir">Fenrir</option>
                       <option value="Zephyr">Zephyr</option>
+                      <option value="Aoide">Aoide</option>
                     </select>
                   </div>
 

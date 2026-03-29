@@ -11,6 +11,49 @@ export interface MemoryBoard {
   openQuestions: string[];
 }
 
+export async function generateAgentAvatar(prompt: string, options: { background?: 'white' | 'studio' | 'office' } = {}) {
+  try {
+    const bgPrompt = options.background === 'white' 
+      ? "isolated on a pure, solid white background, perfect for background removal to create a transparent look" 
+      : options.background === 'office'
+      ? "in a modern, slightly blurred professional office environment"
+      : "in a professional studio setting with neutral, clean lighting";
+
+    const response = await ai.models.generateImages({
+      model: 'imagen-4.0-generate-001',
+      prompt: `A highly realistic, professional studio portrait of a unique human ${prompt}. ${bgPrompt}. The person should have distinct facial features, a specific ethnic background, and an intelligent expression matching their role. Photorealistic, 8k resolution, cinematic lighting, sharp focus, detailed skin texture, professional headshot. No text, no logos, no watermarks.`,
+      config: {
+        numberOfImages: 1,
+        outputMimeType: 'image/png',
+        aspectRatio: '1:1',
+      },
+    });
+
+    if (response.generatedImages?.[0]?.image?.imageBytes) {
+      return `data:image/png;base64,${response.generatedImages[0].image.imageBytes}`;
+    }
+    return null;
+  } catch (error) {
+    console.error("Avatar Generation Error:", error);
+    // Fallback to Gemini Flash if Imagen fails or is unavailable
+    try {
+      const fallbackResponse = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-image-preview',
+        contents: {
+          parts: [{ text: `Highly realistic human portrait: ${prompt}. Isolated on white background.` }],
+        },
+        config: { imageConfig: { aspectRatio: "1:1", imageSize: "1K" } },
+      });
+      for (const part of fallbackResponse.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    } catch (e) {
+      console.error("Fallback Avatar Generation Error:", e);
+    }
+    return null;
+  }
+}
+
 export async function* generatePanelDiscussion(
   topic: string, 
   agents: any[], 
@@ -63,17 +106,52 @@ export async function* generatePanelDiscussion(
   yield `MEMORY_UPDATE:${JSON.stringify(memoryBoard)}`;
   await saveMemory(discussionId, memoryBoard);
 
-  // 3. Discussion Loop (Sequential turns)
-  for (const agent of specialists) {
+  // 3. Dynamic Discussion Loop
+  let turnCount = 0;
+  const maxTurns = 12;
+  let shouldClose = false;
+
+  while (turnCount < maxTurns && !shouldClose) {
     if (signal?.aborted) break;
-    yield* runAgentTurn(agent, `Contribute to the discussion about "${topic}" from your perspective as ${agent.role}. React to what others have said.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
+
+    // Re-fetch memory board to catch any manual user edits during the discussion
+    try {
+      const res = await fetch(`/api/memory/${discussionId}`);
+      if (res.ok) {
+        const latestMemory = await res.json();
+        memoryBoard = latestMemory;
+      }
+    } catch (e) {
+      console.error("Failed to re-fetch memory during discussion:", e);
+    }
+
+    // Determine next speaker and hand raisers
+    const selection = await selectNextSpeaker(conversationHistory, agents, memoryBoard, topic);
+    shouldClose = selection.shouldClose;
+    
+    if (selection.handRaisers && selection.handRaisers.length > 0) {
+      yield `HANDS_RAISED:${JSON.stringify(selection.handRaisers)}`;
+      // Give users a moment to see the "bidding" process
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
+    if (shouldClose) break;
+
+    const nextAgent = agents.find(a => a.id === selection.nextAgentId) || specialists[turnCount % specialists.length];
+    
+    // Lower hands before speaking
+    yield `HANDS_LOWERED`;
+
+    yield* runAgentTurn(nextAgent, `Contribute to the discussion about "${topic}" from your perspective as ${nextAgent.role}. React to what others have said.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
     
     // Update memory board from specialist's turn
     const agentResponse = conversationHistory[conversationHistory.length - 1].content;
-    const agentUpdates = await extractMemoryUpdates(agent.name, agent.role, agentResponse, memoryBoard);
+    const agentUpdates = await extractMemoryUpdates(nextAgent.name, nextAgent.role, agentResponse, memoryBoard);
     updateMemoryBoard(memoryBoard, agentUpdates);
     yield `MEMORY_UPDATE:${JSON.stringify(memoryBoard)}`;
     await saveMemory(discussionId, memoryBoard);
+
+    turnCount++;
   }
 
   // 4. Manager Verdict and Final Plan
@@ -139,6 +217,68 @@ async function saveMemory(id: string, memory: MemoryBoard) {
     });
   } catch (e) {
     console.error("Failed to save memory to DB:", e);
+  }
+}
+
+async function selectNextSpeaker(
+  conversationHistory: { role: string, content: string }[],
+  agents: any[],
+  memoryBoard: MemoryBoard,
+  topic: string
+): Promise<{ nextAgentId: number, handRaisers: number[], shouldClose: boolean, reason: string }> {
+  const specialists = agents.filter(a => a.role !== 'Manager' && a.role !== 'Administrator' && a.id !== 0);
+
+  const prompt = `
+You are the Administrator (Nexus). Based on the conversation history and the current memory board, decide who should speak next in the panel discussion about "${topic}".
+
+SPECIALISTS:
+${specialists.map(s => `- ID ${s.id}: ${s.name} (${s.role})`).join('\n')}
+
+RULES:
+1. If someone was directly challenged or asked a question, they should likely speak next.
+2. If a new topic was raised, the relevant specialist should speak.
+3. If the discussion is circling, pick someone who hasn't spoken much.
+4. Identify agents who would "raise their hand" (want to interject or build upon the point).
+5. If the discussion has reached a natural conclusion or all points are covered, set shouldClose to true.
+6. Limit the total turns to around 10-12.
+7. Ensure every specialist speaks at least once early in the discussion.
+
+RESPONSE FORMAT (JSON ONLY):
+{
+  "nextAgentId": number,
+  "handRaisers": number[],
+  "reason": "string",
+  "shouldClose": boolean
+}
+`;
+
+  try {
+    // Truncate history for selection prompt to save tokens and keep context relevant
+    const recentHistory = conversationHistory.slice(-5);
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
+        { role: 'user', parts: [{ text: prompt + "\n\nRECENT CONVERSATION HISTORY:\n" + recentHistory.map(h => `[${h.role}]: ${h.content.substring(0, 300)}`).join('\n') }] }
+      ],
+      config: {
+        responseMimeType: "application/json"
+      }
+    });
+
+    return JSON.parse(response.text || "{}");
+  } catch (e) {
+    console.error("Speaker selection failed:", e);
+    // Fallback: pick the next specialist in order
+    const lastSpeakerName = conversationHistory.length > 0 ? conversationHistory[conversationHistory.length - 1].role : "";
+    const lastSpeaker = agents.find(a => a.name === lastSpeakerName);
+    const lastSpeakerId = lastSpeaker ? lastSpeaker.id : -1;
+    const nextIndex = (specialists.findIndex(s => s.id === lastSpeakerId) + 1) % specialists.length;
+    return {
+      nextAgentId: specialists[nextIndex].id,
+      handRaisers: [],
+      reason: "Fallback",
+      shouldClose: conversationHistory.length > 15
+    };
   }
 }
 
@@ -253,7 +393,10 @@ export async function generateTTS(text: string, voiceName: string = 'Kore') {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName },
+            // Fallback to Zephyr if voiceName is not in the standard list
+            prebuiltVoiceConfig: { 
+              voiceName: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'].includes(voiceName) ? voiceName : 'Zephyr' 
+            },
           },
         },
       },
