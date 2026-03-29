@@ -20,12 +20,12 @@ const hexToRgb = (hex: string) => {
 };
 
 const defaultAgents = [
-  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" },
-  { id: 0, name: "Nexus", role: "Administrator", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Aoide", provider: "Cloud (Gemini)", model: "gemini-3.1-pro-preview" }
+  { id: 1, name: "Atlas", role: "Product Strategist", hex: "#ef4444", rgba: "239, 68, 68", img: dummyImages[1], score: 100, voice: "Fenrir", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 2, name: "Veda", role: "System Architect", hex: "#10b981", rgba: "16, 185, 129", img: dummyImages[2], score: 100, voice: "Kore", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 3, name: "Echo", role: "Execution Engineer", hex: "#a855f7", rgba: "168, 85, 247", img: dummyImages[3], score: 100, voice: "Charon", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 4, name: "Nova", role: "UX Specialist", hex: "#f59e0b", rgba: "245, 158, 11", img: dummyImages[4], score: 100, voice: "Puck", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 5, name: "Cipher", role: "Reality Checker", hex: "#06b6d4", rgba: "6, 182, 212", img: dummyImages[5], score: 100, voice: "Zephyr", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" },
+  { id: 0, name: "Nexus", role: "Administrator", hex: "#3b82f6", rgba: "59, 130, 246", img: dummyImages[0], score: 100, voice: "Aoide", provider: "Cloud (Gemini)", model: "gemini-3-flash-preview" }
 ];
 
 interface Message {
@@ -88,6 +88,26 @@ export default function Panel() {
   const isPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
+
+  useEffect(() => {
+    const loadAvatars = async () => {
+      try {
+        const res = await fetch('/api/avatars');
+        if (res.ok) {
+          const savedAvatars = await res.json();
+          if (Array.isArray(savedAvatars)) {
+            setAgents(prev => prev.map(agent => {
+              const saved = savedAvatars.find((s: any) => s.id === agent.id);
+              return saved ? { ...agent, img: saved.img } : agent;
+            }));
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load avatars:", e);
+      }
+    };
+    loadAvatars();
+  }, []);
 
   useEffect(() => {
     socketRef.current = io();
@@ -540,6 +560,13 @@ export default function Panel() {
         return { ...agent, img: avatar || agent.img };
       }));
       setAgents(newAgents);
+      
+      // Save to server
+      await fetch('/api/avatars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAgents.map(a => ({ id: a.id, name: a.name, img: a.img })))
+      });
     } catch (e) {
       console.error("Failed to regenerate avatars:", e);
     } finally {
@@ -731,11 +758,6 @@ export default function Panel() {
             <button className={`interrupt-btn ${isProcessing ? 'enabled' : ''}`} onClick={handleInterrupt} title="Interrupt Agents" disabled={!isProcessing}>
               <AudioLines size={18} />
               <span>HALT</span>
-            </button>
-
-            <button className={`interrupt-btn ${isGeneratingAvatars ? 'enabled' : ''}`} onClick={regenerateAvatars} title="Regenerate Realistic Avatars" disabled={isGeneratingAvatars}>
-              <ImageIcon size={18} />
-              <span>{isGeneratingAvatars ? 'GEN...' : 'AVATARS'}</span>
             </button>
           </div>
         </div>

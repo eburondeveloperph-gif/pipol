@@ -362,7 +362,7 @@ ${history.map(h => `[${h.role}]: ${h.content}`).join('\n')}
     }
   } else {
     const responseStream = await ai.models.generateContentStream({
-      model: agent.model || "gemini-3.1-pro-preview",
+      model: agent.model || "gemini-3-flash-preview",
       contents: prompt,
       config: {
         systemInstruction: agentPersona,

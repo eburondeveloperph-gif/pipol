@@ -45,6 +45,7 @@ async function startServer() {
   // Update Memory Board
   app.post("/api/memory/:id", (req, res) => {
     const db = JSON.parse(fs.readFileSync(MEMORY_DB_PATH, "utf-8"));
+    if (!db.discussions) db.discussions = {};
     db.discussions[req.params.id] = req.body;
     fs.writeFileSync(MEMORY_DB_PATH, JSON.stringify(db, null, 2));
     
@@ -52,6 +53,28 @@ async function startServer() {
     io.to(req.params.id).emit("memory_update", req.body);
     
     res.json({ status: "saved" });
+  });
+
+  // Save Avatars
+  app.post("/api/avatars", (req, res) => {
+    const AVATARS_PATH = path.join(process.cwd(), "avatars.json");
+    fs.writeFileSync(AVATARS_PATH, JSON.stringify(req.body, null, 2));
+    res.json({ status: "saved" });
+  });
+
+  // Get Avatars
+  app.get("/api/avatars", (req, res) => {
+    const AVATARS_PATH = path.join(process.cwd(), "avatars.json");
+    if (fs.existsSync(AVATARS_PATH)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(AVATARS_PATH, "utf-8"));
+        res.json(data);
+      } catch (e) {
+        res.json([]);
+      }
+    } else {
+      res.json([]);
+    }
   });
 
   // Socket.io connection handling
