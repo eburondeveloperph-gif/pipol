@@ -106,6 +106,7 @@ export async function* generatePanelDiscussion(
   const conversationHistory: { role: string, content: string }[] = [];
 
   // 3. Manager Opens the Meeting & Introductions
+  yield `[System]: ### PHASE 1: OPENING & INTRODUCTIONS ###\n`;
   yield* runAgentTurn(manager, `Open the meeting for the topic: "${topic}" for client eburon.ai. Introduce yourself as the Strategic Overseer, ask all participants to briefly introduce themselves, and frame the project.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, false, true);
 
   // Update memory board from manager's opening
@@ -116,6 +117,7 @@ export async function* generatePanelDiscussion(
   await saveMemory(discussionId, memoryBoard);
 
   // 3. Dynamic Discussion Loop
+  yield `[System]: ### PHASE 2: FAST PHASE DISCUSSION (STRICT 2-4 SENTENCES) ###\n`;
   let turnCount = 0;
   const maxTurns = 12;
   let shouldClose = false;
@@ -155,7 +157,7 @@ export async function* generatePanelDiscussion(
     // Lower hands before speaking
     yield `HANDS_LOWERED`;
 
-    yield* runAgentTurn(nextAgent, `Contribute to the discussion about "${topic}" from your perspective as ${nextAgent.role}. React to what others have said.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
+    yield* runAgentTurn(nextAgent, `FAST PHASE: Contribute strictly 2-4 sentences to the discussion about "${topic}". Use conversational fillers, address another agent by name, and keep the energy high.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel);
     
     // Update memory board from specialist's turn
     const agentResponse = conversationHistory[conversationHistory.length - 1].content;
@@ -168,6 +170,8 @@ export async function* generatePanelDiscussion(
   }
 
   // 4. Manager Verdict and Final Plan
+  yield `[System]: ### PHASE 3: FINALITY & CONVERGENCE ###\n`;
+  yield `[System]: ### PHASE 4: USER HANDOFF ###\n`;
   yield* runAgentTurn(manager, `Summarize the discussion, make final decisions, and present the FINAL_PLAN including the Shared Memory Board.`, conversationHistory, memoryBoard, agents, options, signal, ollamaUrl, ollamaModel, true);
   
   // Final memory update
@@ -254,7 +258,7 @@ RULES:
 4. If the discussion is circling, pick someone who hasn't spoken much.
 5. Identify agents who would "raise their hand" (want to interject or build upon the point).
 6. If the discussion has reached a natural conclusion or all points are covered, set shouldClose to true.
-7. Limit the total turns to around 15-20 for a fast-paced discussion.
+7. Limit the total turns to around 15-20 for a fast-paced discussion. Every turn in this phase is strictly 2-4 sentences.
 8. Ensure every specialist speaks at least once early in the discussion.
 
 9. Decide on the TRANSITION TIMING to make the discussion feel natural:
@@ -332,10 +336,21 @@ SHARED MEMORY BOARD:
 - OPEN QUESTIONS: ${memory.openQuestions.join(', ')}
 `;
 
+  const fastPhaseConstraints = !isFinalVerdict ? `
+### FAST PHASE PROTOCOL ACTIVE ###
+1. TURN LENGTH: Strictly 2 to 4 sentences. 
+2. FILLERS: You MUST use natural fillers (e.g., "Look," "Honestly," "I mean," "Right," "Uh," "Um," "So," "Actually," "Well," "I was thinking," "To be honest").
+3. DIRECT ADDRESS: You MUST address another agent by name in your response.
+4. NO ROBOTIC PREAMBLE: Do not say "As an AI" or "I agree." Just jump in. Do not repeat your name or role at the start.
+5. PUNCHY TONE: Use fragments, start with "But" or "And," and be opinionated.
+` : '';
+
   const agentPersona = `
 You are ${agent.name}, the ${agent.role}.
 Your personality: ${(agent.role === 'Strategic Overseer' || agent.role === 'Manager') ? 'Leader, decisive, focused on convergence.' : 'Specialist, opinionated, focused on your domain.'}
 ${options.systemInstruction || MASTER_PANEL_PROMPT}
+
+${fastPhaseConstraints}
 
 CURRENT TASK: ${instruction}
 ${isFinalVerdict ? 'CRITICAL: You must end your response with "### FINAL_PLAN ###" followed by the structured plan and the final Shared Memory Board.' : ''}
@@ -346,6 +361,7 @@ ${memoryContext}
 ${history.map(h => `[${h.role}]: ${h.content}`).join('\n')}
 
 [SYSTEM]: ${agent.name}, it is your turn. ${instruction}
+Participants in this room: ${allAgents.map(a => a.name).join(', ')}.
 `;
 
   let fullResponse = "";
