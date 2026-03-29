@@ -112,6 +112,7 @@ header {
 /* --- Left Sidebar (Chat & Controls) --- */
 #left-sidebar {
     width: 420px;
+    height: 100%;
     flex-shrink: 0;
     display: flex; flex-direction: column;
     background: var(--bg-chat);
@@ -175,6 +176,10 @@ header {
     border-top: 1px solid var(--border-color);
     background: var(--bg-panel); 
     display: flex; gap: 12px; align-items: center;
+    flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
 }
 
 .mic-btn { 

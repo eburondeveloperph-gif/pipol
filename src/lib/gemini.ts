@@ -138,6 +138,10 @@ export async function* generatePanelDiscussion(
     const selection = await selectNextSpeaker(conversationHistory, agents, memoryBoard, topic);
     shouldClose = selection.shouldClose;
     
+    if (selection.transition && selection.transition !== 'standard') {
+      yield `TRANSITION:${selection.transition}`;
+    }
+
     if (selection.handRaisers && selection.handRaisers.length > 0) {
       yield `HANDS_RAISED:${JSON.stringify(selection.handRaisers)}`;
       // Give users a moment to see the "bidding" process
@@ -234,7 +238,7 @@ async function selectNextSpeaker(
   agents: any[],
   memoryBoard: MemoryBoard,
   topic: string
-): Promise<{ nextAgentId: number, handRaisers: number[], shouldClose: boolean, reason: string }> {
+): Promise<{ nextAgentId: number, handRaisers: number[], shouldClose: boolean, reason: string, transition: 'standard' | 'overlap' | 'interjection' }> {
   const specialists = agents.filter(a => a.role !== 'Strategic Overseer' && a.role !== 'Manager' && a.id !== 0);
 
   const prompt = `
@@ -253,12 +257,18 @@ RULES:
 7. Limit the total turns to around 15-20 for a fast-paced discussion.
 8. Ensure every specialist speaks at least once early in the discussion.
 
+9. Decide on the TRANSITION TIMING to make the discussion feel natural:
+   - "standard": Wait for the current speaker to fully finish (default).
+   - "overlap": Start the next speaker during the final sentence of the current one (use for high agreement, excitement, or building on a point).
+   - "interjection": Start the next speaker immediately after a key point is made, potentially cutting off the previous speaker's tail (use for urgency, direct challenge, or strong disagreement).
+
 RESPONSE FORMAT (JSON ONLY):
 {
   "nextAgentId": number,
   "handRaisers": number[],
   "reason": "string",
-  "shouldClose": boolean
+  "shouldClose": boolean,
+  "transition": "standard" | "overlap" | "interjection"
 }
 `;
 
@@ -275,7 +285,14 @@ RESPONSE FORMAT (JSON ONLY):
       }
     });
 
-    return JSON.parse(response.text || "{}");
+    const json = JSON.parse(response.text || "{}");
+    return {
+      nextAgentId: json.nextAgentId || 0,
+      handRaisers: json.handRaisers || [],
+      reason: json.reason || "Next turn",
+      shouldClose: !!json.shouldClose,
+      transition: json.transition || 'standard'
+    };
   } catch (e) {
     console.error("Speaker selection failed:", e);
     // Fallback: pick the next specialist in order
@@ -287,7 +304,8 @@ RESPONSE FORMAT (JSON ONLY):
       nextAgentId: specialists[nextIndex].id,
       handRaisers: [],
       reason: "Fallback",
-      shouldClose: conversationHistory.length > 15
+      shouldClose: conversationHistory.length > 15,
+      transition: 'standard'
     };
   }
 }

@@ -83,6 +83,9 @@ export default function Panel() {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isBufferingAudio, setIsBufferingAudio] = useState(false);
+  const isBufferingAudioRef = useRef(false);
+  const [bufferedText, setBufferedText] = useState('');
   const [systemPrompt, setSystemPrompt] = useState(MASTER_PANEL_PROMPT);
   const [input, setInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -108,6 +111,7 @@ export default function Panel() {
   const [ollamaModel, setOllamaModel] = useState('gemma');
   const [playingAgentName, setPlayingAgentName] = useState<string | null>(null);
   const [handRaisers, setHandRaisers] = useState<number[]>([]);
+  const [pendingTransition, setPendingTransition] = useState<'standard' | 'overlap' | 'interjection'>('standard');
   const [isGeneratingAvatars, setIsGeneratingAvatars] = useState(false);
   const [avatarBgStyle, setAvatarBgStyle] = useState<'white' | 'studio' | 'office'>('white');
   
@@ -116,10 +120,16 @@ export default function Panel() {
   const recognitionRef = useRef<any>(null);
   const inputRef = useRef('');
   const initialInputRef = useRef('');
-  const audioQueueRef = useRef<{ text: string, voice: string, pitch: number, agentName: string }[]>([]);
+  const audioQueueRef = useRef<{ text: string, voice: string, pitch: number, agentName: string, forceStart?: boolean }[]>([]);
+  const audioCountRef = useRef(0);
   const isPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const bufferedMessagesRef = useRef<Message[]>([]);
+
+  useEffect(() => {
+    isBufferingAudioRef.current = isBufferingAudio;
+  }, [isBufferingAudio]);
 
   useEffect(() => {
     const loadAvatars = async () => {
@@ -185,16 +195,28 @@ export default function Panel() {
   }, [input]);
 
   const processAudioQueue = async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    if (audioQueueRef.current.length === 0 || isBufferingAudio) return;
     
-    isPlayingRef.current = true;
+    // If something is playing and the next item isn't a force start, wait.
+    if (isPlayingRef.current && !audioQueueRef.current[0].forceStart) return;
+    
     const item = audioQueueRef.current.shift();
-    if (!item) {
-      isPlayingRef.current = false;
+    if (!item) return;
+
+    if (item.forceStart) {
+      // Handle concurrent playback for overlap/interjection
+      playAudioInstance(item, true);
+      // Immediately try to process the rest of the queue if any
+      processAudioQueue();
       return;
     }
 
-    setPlayingAgentName(item.agentName);
+    isPlayingRef.current = true;
+    await playAudioInstance(item, false);
+  };
+
+  const playAudioInstance = async (item: { text: string, voice: string, pitch: number, agentName: string }, isConcurrent: boolean) => {
+    if (!isConcurrent) setPlayingAgentName(item.agentName);
     
     try {
       const url = await generateTTS(item.text, item.voice, item.pitch);
@@ -202,20 +224,25 @@ export default function Panel() {
         const audio = new Audio();
         audio.src = url;
         audio.muted = isMuted;
-        currentAudioRef.current = audio;
+        
+        if (!isConcurrent) currentAudioRef.current = audio;
 
         const cleanup = () => {
-          setPlayingAgentName(null);
-          isPlayingRef.current = false;
-          currentAudioRef.current = null;
+          if (!isConcurrent) {
+            setPlayingAgentName(null);
+            isPlayingRef.current = false;
+            currentAudioRef.current = null;
+          }
         };
 
         audio.onended = () => {
           cleanup();
-          if (audioQueueRef.current.length === 0 && isHandsFree) {
-            setTimeout(() => toggleMic(), 500);
-          } else {
-            processAudioQueue();
+          if (!isConcurrent) {
+            if (audioQueueRef.current.length === 0 && isHandsFree) {
+              setTimeout(() => toggleMic(), 500);
+            } else {
+              processAudioQueue();
+            }
           }
         };
 
@@ -226,30 +253,43 @@ export default function Panel() {
             item
           });
           cleanup();
-          if (audioQueueRef.current.length === 0 && isHandsFree) {
-            setTimeout(() => toggleMic(), 500);
-          } else {
-            processAudioQueue();
+          if (!isConcurrent) {
+            if (audioQueueRef.current.length === 0 && isHandsFree) {
+              setTimeout(() => toggleMic(), 500);
+            } else {
+              processAudioQueue();
+            }
           }
         };
 
         await audio.play();
       } else {
+        if (!isConcurrent) {
+          setPlayingAgentName(null);
+          isPlayingRef.current = false;
+          processAudioQueue();
+        }
+      }
+    } catch (e) {
+      console.error("TTS Processing Error:", e);
+      if (!isConcurrent) {
         setPlayingAgentName(null);
         isPlayingRef.current = false;
         processAudioQueue();
       }
-    } catch (e) {
-      console.error("TTS Processing Error:", e);
-      setPlayingAgentName(null);
-      isPlayingRef.current = false;
-      processAudioQueue();
     }
   };
 
-  const enqueueAudio = (text: string, voice: string, pitch: number, agentName: string) => {
-    audioQueueRef.current.push({ text, voice, pitch, agentName });
-    processAudioQueue();
+  const enqueueAudio = (text: string, voice: string, pitch: number, agentName: string, forceStart: boolean = false) => {
+    audioQueueRef.current.push({ text, voice, pitch, agentName, forceStart });
+    audioCountRef.current++;
+    
+    if (isBufferingAudio && audioCountRef.current >= 5) {
+      setIsBufferingAudio(false);
+      // The useEffect for isBufferingAudio will trigger processAudioQueue
+    } else {
+      processAudioQueue();
+    }
   };
 
   const handleAgentTTS = async (agent: any) => {
@@ -317,6 +357,16 @@ export default function Panel() {
   }, [messages, currentStreamingText]);
 
   useEffect(() => {
+    if (!isBufferingAudio && (audioQueueRef.current.length > 0 || bufferedMessagesRef.current.length > 0)) {
+      if (bufferedMessagesRef.current.length > 0) {
+        setMessages(prev => [...prev, ...bufferedMessagesRef.current]);
+        bufferedMessagesRef.current = [];
+      }
+      processAudioQueue();
+    }
+  }, [isBufferingAudio]);
+
+  useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       recognitionRef.current = new SpeechRec();
@@ -379,6 +429,11 @@ export default function Panel() {
 
     setIsProcessing(true);
     setIsInitializing(true);
+    setIsBufferingAudio(true);
+    isBufferingAudioRef.current = true;
+    audioCountRef.current = 0;
+    setBufferedText('');
+    bufferedMessagesRef.current = [];
     const manager = agents.find(a => a.role === 'Manager' || a.role === 'Administrator' || a.id === 0);
     setActiveAgentName(manager?.name || null);
     setCurrentStreamingText('');
@@ -432,6 +487,12 @@ export default function Panel() {
           } catch (e) {
             console.error("Failed to parse memory update:", e);
           }
+        }
+
+        // Handle Transitions
+        if (chunk.startsWith('TRANSITION:')) {
+          setPendingTransition(chunk.replace('TRANSITION:', '') as any);
+          continue;
         }
 
         // Handle Hand Raising
@@ -515,6 +576,17 @@ export default function Panel() {
           const speakerRegex = new RegExp(`^(?:\\*\\*|)?\\[(${agentNames})\\](?:\\*\\*|)?(?:\\s*\\[.*?\\])*:\\s*(.*)`, 'i');
           const match = line.match(speakerRegex);
           if (match) {
+            const isInterjection = pendingTransition === 'interjection';
+            const isOverlap = pendingTransition === 'overlap';
+
+            if (isInterjection && currentAudioRef.current) {
+              // Cut off current audio for interjection
+              currentAudioRef.current.pause();
+              currentAudioRef.current = null;
+              isPlayingRef.current = false;
+              audioQueueRef.current = []; // Clear queue to make room for interjection
+            }
+
             if (currentSpeaker && currentMessageText) {
               // Enqueue leftover sentence buffer before switching speakers
               if (sentenceBuffer.trim().length > 0) {
@@ -528,13 +600,30 @@ export default function Panel() {
             currentMessageText = match[2] + '\n';
             sentenceBuffer = match[2]; // Initialize sentence buffer with the first part of the message
             setActiveAgentName(currentSpeaker);
-            setCurrentStreamingText(currentMessageText);
+            if (isBufferingAudio) {
+              setBufferedText(prev => prev + `\n[${currentSpeaker}]: ` + match[2]);
+            } else {
+              setCurrentStreamingText(match[2] + '\n');
+            }
             
-            // Clear initializing state as soon as we have a speaker
+            // Handle cross-talk audio start
+            if (sentenceBuffer.trim().length > 5) {
+              const agent = agents.find(a => a.name === currentSpeaker);
+              // For interjection, we don't need forceStart because we cleared the queue and isPlayingRef above
+              // For overlap, we use forceStart to play concurrently with the previous speaker's tail
+              if (agent) enqueueAudio(sentenceBuffer.trim(), agent.voice, agent.pitch || 1.0, agent.name, isOverlap);
+              sentenceBuffer = ""; 
+            }
+
+            setPendingTransition('standard'); // Reset transition
             setIsInitializing(false);
           } else if (currentSpeaker) {
               currentMessageText += line + '\n';
-              setCurrentStreamingText(currentMessageText);
+              if (isBufferingAudio) {
+                setBufferedText(prev => prev + line + '\n');
+              } else {
+                setCurrentStreamingText(currentMessageText);
+              }
             }
           }
         }
@@ -581,20 +670,30 @@ export default function Panel() {
     } finally {
       setIsProcessing(false);
       setIsInitializing(false);
+      setIsBufferingAudio(false);
+      isBufferingAudioRef.current = false;
       setActiveAgentName(null);
       setCurrentStreamingText('');
+      setBufferedText('');
+      setHandRaisers([]);
     }
   };
 
   const commitMessage = (speaker: string, text: string, skipAudio: boolean = false) => {
     const agent = agents.find(a => a.role === speaker || a.name === speaker);
-    setMessages(prev => [...prev, {
+    const newMsg: Message = {
       id: Date.now().toString() + Math.random(),
       sender: speaker,
       text: text.trim(),
       type: 'agent-message',
       colorHex: agent?.hex || '#ffffff'
-    }]);
+    };
+    
+    if (isBufferingAudioRef.current) {
+      bufferedMessagesRef.current.push(newMsg);
+    } else {
+      setMessages(prev => [...prev, newMsg]);
+    }
     
     if (agent && !skipAudio) {
       enqueueAudio(text.trim(), agent.voice, agent.pitch || 1.0, agent.name);
@@ -680,8 +779,12 @@ export default function Panel() {
 
     setIsProcessing(false);
     setIsInitializing(false);
+    setIsBufferingAudio(false);
+    isBufferingAudioRef.current = false;
     setActiveAgentName(null);
     setCurrentStreamingText('');
+    setBufferedText('');
+    setHandRaisers([]);
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       sender: 'System',
@@ -823,7 +926,23 @@ export default function Panel() {
               </div>
             )}
 
-            {activeAgentName && currentStreamingText && (
+            {isBufferingAudio && !isInitializing && (
+              <div className="message system-msg flex flex-col items-center gap-3 text-blue-400 bg-blue-400/5 border-blue-400/20">
+                <div className="flex items-center gap-2">
+                  <AudioLines size={18} className="animate-pulse" />
+                  <span className="font-bold tracking-tight">Synthesizing Strategic Discussion...</span>
+                </div>
+                <div className="w-full bg-gray-700/30 h-1 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-blue-500 h-full transition-all duration-500" 
+                    style={{ width: `${(audioCountRef.current / 5) * 100}%` }}
+                  />
+                </div>
+                <span className="text-[10px] opacity-60">Pre-buffering audio for gapless playback ({audioCountRef.current}/5)</span>
+              </div>
+            )}
+
+            {!isBufferingAudio && activeAgentName && currentStreamingText && (
               <div className="message agent-message">
                 <div className="agent-msg-name" style={{ color: activeAgent?.hex || '#ffffff' }}>
                   <div className="flex items-center gap-2">
